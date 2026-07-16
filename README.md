@@ -183,6 +183,19 @@ npm run build && npm start
 
 Stop with `Ctrl+C` (shuts down the websocket and exits cleanly).
 
+Check performance any time with:
+
+```bash
+npm run report            # reads trades.jsonl
+npm run report other.jsonl # or a specific log file
+```
+
+Prints win rate, total/average realized PnL, best/worst trade, and exit
+reason breakdown over the last 24 hours, last 7 days, and all-time. Only
+counts each trade's final exit row (a staged partial-take-profit exit logs
+an intermediate row too, but its result is already folded into the final
+row's cumulative PnL — see the trade log section below).
+
 ## Dry-run (paper trading) mode
 
 With `DRY_RUN=true` (the default), the bot runs against the **same live
@@ -283,6 +296,7 @@ src/
   config.ts           env var loading / validation
   types.ts            shared types (events, positions, trade results)
   logger.ts           console + JSONL trade logging
+  report.ts           standalone PnL summary over trades.jsonl (npm run report)
   wallet.ts           keypair + Solana RPC connection (live mode)
   paperWallet.ts       virtual balance ledger (dry-run mode)
   discovery.ts        new-token tracking, volume filter, anti-rug filter
