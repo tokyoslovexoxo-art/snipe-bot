@@ -15,9 +15,12 @@ function printBanner(): void {
     "==================================================",
     ` Pump.fun snipe bot — mode: ${config.dryRun ? "DRY RUN (paper trading, no real funds)" : "LIVE (real SOL at risk)"}`,
     ` Buy size:        ${config.buyAmountSol} SOL`,
-    ` Take profit:     +${config.takeProfitPct}%`,
+    config.dynamicTakeProfitEnabled
+      ? ` Take profit:     dynamic, +${config.minTakeProfitPct}% to +${config.maxTakeProfitPct}% (confidence + sniper support)`
+      : ` Take profit:     +${config.takeProfitPct}% (flat)`,
     ` Stop loss:       -${config.stopLossPct}%`,
-    ` Max hold time:   ${config.maxHoldTimeMs / 1000}s (safety net if TP/SL never hit)`,
+    ` Max hold time:   ${config.maxHoldTimeMs / 1000}s hard cap, ${config.unsupportedMaxHoldMs / 1000}s if unsupported`,
+    ` Sniper exit:     ${config.sniperExitEnabled ? "on" : "off"} (follow a trusted sniper out immediately if they fully exit)`,
     ` Min volume:      ${config.minVolumeSol} SOL within ${config.volumeWindowMs / 1000}s of launch`,
     ` Max positions:   ${config.maxConcurrentPositions}`,
     ` Max dev hold:    ${config.maxDevHoldPct}% (anti-rug filter)`,

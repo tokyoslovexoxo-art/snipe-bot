@@ -27,8 +27,9 @@ export const config = {
   dryRunStartingBalanceSol: num("DRY_RUN_STARTING_BALANCE_SOL", 10),
 
   buyAmountSol: num("BUY_AMOUNT_SOL", 1),
+  // Static take-profit, only used when DYNAMIC_TAKE_PROFIT_ENABLED=false.
   takeProfitPct: num("TAKE_PROFIT_PCT", 20),
-  stopLossPct: num("STOP_LOSS_PCT", 2),
+  stopLossPct: num("STOP_LOSS_PCT", 10),
   minVolumeSol: num("MIN_VOLUME_SOL", 0.2),
   volumeWindowMs: num("VOLUME_WINDOW_MS", 60_000),
   maxConcurrentPositions: num("MAX_CONCURRENT_POSITIONS", 3),
@@ -80,6 +81,52 @@ export const config = {
     .filter((w) => w.length > 0),
   sniperRevokeMinSamples: num("SNIPER_REVOKE_MIN_SAMPLES", 3),
   sniperRevokeMaxWinRatePct: num("SNIPER_REVOKE_MAX_WIN_RATE_PCT", 40),
+
+  // ==== Dynamic take-profit ====
+  // Instead of a flat TAKE_PROFIT_PCT, place the target somewhere in
+  // [MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT] based on a deterministic
+  // confidence score (src/confidence.ts) computed from the buy's dev/sniper
+  // trust signals — and while a trusted sniper is still holding the same
+  // token, keep aiming for that higher target; once none are left holding,
+  // drop the bar back down to MIN_TAKE_PROFIT_PCT so a win gets taken rather
+  // than risking it round-trip back down. See README for the tradeoffs.
+  dynamicTakeProfitEnabled: bool("DYNAMIC_TAKE_PROFIT_ENABLED", true),
+  minTakeProfitPct: num("MIN_TAKE_PROFIT_PCT", 50),
+  maxTakeProfitPct: num("MAX_TAKE_PROFIT_PCT", 150),
+  // If a trusted sniper who was holding this token fully exits, follow them
+  // out immediately regardless of current PnL (only applies while
+  // dynamicTakeProfitEnabled).
+  sniperExitEnabled: bool("SNIPER_EXIT_ENABLED", true),
+  // Shorter hold cap that applies once/if no trusted sniper is currently
+  // holding the token (never had one, or they've since left) — separate
+  // from and always <= MAX_HOLD_TIME_MS, so an unsupported position doesn't
+  // sit around waiting for the full hold window while chasing a big target
+  // with no corroborating signal left.
+  unsupportedMaxHoldMs: num("UNSUPPORTED_MAX_HOLD_MS", 180_000),
+
+  // ==== Staged (partial) profit-taking ====
+  // At MIN_TAKE_PROFIT_PCT, the default behavior is to sell the WHOLE
+  // position — take the win rather than risk it giving it back. The bot
+  // only holds part of the position for a bigger target if BOTH:
+  //   - confidenceScore >= EXTENDED_HOLD_MIN_CONFIDENCE_PCT/100, AND
+  //   - the token's current market cap (converted from PumpPortal's
+  //     SOL-denominated marketCapSol using SOL_USD_PRICE below) is already
+  //     at or above EXTENDED_HOLD_MIN_MARKET_CAP_USD.
+  // This is a real-time confirmation check ("has it actually grown into
+  // this range already"), not a prediction of where it WILL go — this bot
+  // has no ability to forecast future market cap, see README.
+  // When the gate passes, PARTIAL_TAKE_PROFIT_SELL_PCT of the position is
+  // sold at MIN_TAKE_PROFIT_PCT to lock in a real, banked gain; the
+  // remainder's stop-loss moves to breakeven (0%) and its target becomes
+  // the same confidence/sniper-support-scaled logic as before, up to
+  // MAX_TAKE_PROFIT_PCT.
+  extendedHoldMinConfidencePct: num("EXTENDED_HOLD_MIN_CONFIDENCE_PCT", 80),
+  extendedHoldMinMarketCapUsd: num("EXTENDED_HOLD_MIN_MARKET_CAP_USD", 10_000),
+  partialTakeProfitSellPct: num("PARTIAL_TAKE_PROFIT_SELL_PCT", 50),
+  // Manually-set SOL/USD rate used only for the market-cap gate above.
+  // NOT a live price feed — SOL is volatile, keep this reasonably current
+  // yourself. Set near $76 as of when this was configured (Jul 2026).
+  solUsdPrice: num("SOL_USD_PRICE", 76),
 };
 
 export function assertLiveConfig(): void {

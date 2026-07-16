@@ -2,8 +2,8 @@
 
 A pump.fun new-launch snipe bot for Solana. Watches new pump.fun token
 launches in real time, buys into ones that clear a minimum volume threshold,
-and exits automatically on take-profit, stop-loss, or a max-hold-time safety
-net.
+and exits automatically on a confidence-scaled take-profit, stop-loss, or a
+max-hold-time safety net.
 
 **Read the Risks section before using this with real money.**
 
@@ -19,10 +19,12 @@ net.
   outright as a basic rug filter.
 - **Buy**: spends `BUY_AMOUNT_SOL` SOL per qualifying token, up to
   `MAX_CONCURRENT_POSITIONS` open positions at once.
-- **Sell**: closes a position when unrealized PnL hits
-  +`TAKE_PROFIT_PCT`%, -`STOP_LOSS_PCT`%, or the position has been held
-  longer than `MAX_HOLD_TIME_MS` (a safety net for tokens that go illiquid
-  without ever hitting TP/SL).
+- **Sell**: closes a position when unrealized PnL hits its take-profit
+  target (dynamic `MIN_TAKE_PROFIT_PCT`–`MAX_TAKE_PROFIT_PCT`, or a flat
+  `TAKE_PROFIT_PCT` if dynamic mode is off — see below), -`STOP_LOSS_PCT`%,
+  the position has been held longer than `MAX_HOLD_TIME_MS` (absolute
+  safety net), `UNSUPPORTED_MAX_HOLD_MS` with no trusted sniper currently
+  holding, or a trusted sniper backing the trade fully exits.
 - **Execution**: live trades are built via PumpPortal's non-custodial
   "local transaction" API — PumpPortal returns an unsigned transaction, this
   bot signs it locally with your keypair and broadcasts it via your own RPC.
@@ -36,6 +38,68 @@ net.
   that buy into tokens the bot is watching, scored on real observed
   round-trip PnL, and fast-tracks a buy when a proven-profitable wallet buys
   into a token you're already tracking.
+
+## Dynamic take-profit, staged exits, and hold-time caps
+
+By default (`DYNAMIC_TAKE_PROFIT_ENABLED=true`) the bot's bias is to **take
+the win, not chase a bigger one**: at `MIN_TAKE_PROFIT_PCT` (default 50%) it
+sells the *whole* position, unless a specific, narrow condition is met —
+see "Staged exit" below. `MAX_TAKE_PROFIT_PCT` (default 150%) is only ever
+reached by the remainder of a staged exit, never by a full position that
+hasn't already banked a partial profit.
+
+**Confidence** (`src/confidence.ts`): a deterministic score, computed once
+at buy time from this trade's `DecisionContext` — how it qualified
+(dev/sniper fast-track vs. plain volume confirmation) and the win rates of
+the creator and triggering sniper, if known. This places a
+`targetTakeProfitPct` for the position somewhere in
+`[MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT]`. Like the dev/adaptive-tuning
+mechanisms above, this is a fixed, logged formula over known signals — not
+a learned model.
+
+**Staged exit — the only way the bot holds past `MIN_TAKE_PROFIT_PCT`:**
+once PnL crosses `MIN_TAKE_PROFIT_PCT`, the bot checks BOTH:
+- `confidenceScore >= EXTENDED_HOLD_MIN_CONFIDENCE_PCT / 100` (default 80%), AND
+- the token's current market cap is already at/above
+  `EXTENDED_HOLD_MIN_MARKET_CAP_USD` (default $10,000) — a **real-time
+  confirmation check**, not a prediction. PumpPortal reports market cap in
+  SOL; this bot has no live price feed, so the USD conversion uses a
+  manually-set `SOL_USD_PRICE` you need to keep reasonably current yourself.
+
+If both hold: `PARTIAL_TAKE_PROFIT_SELL_PCT` (default 50%) of the position
+sells immediately, banking a real gain, and the remainder keeps riding —
+with its stop-loss moved to **breakeven (0%)**, not `-STOP_LOSS_PCT`, so the
+now-secured profit can't be put back at risk. The remainder's upper target
+follows the same confidence/sniper-support logic, up to
+`MAX_TAKE_PROFIT_PCT`. If either condition fails, the bot just takes the
+full win at `MIN_TAKE_PROFIT_PCT` — no partial hold, no extra exposure.
+
+**Sniper support, live**: while a remainder is being held, if a trusted
+sniper is confirmed still holding the same token, the bot keeps aiming for
+the higher target. The moment a trusted sniper who was holding fully exits,
+the bar drops to `MIN_TAKE_PROFIT_PCT` immediately (`sniper_exit` in the
+trade log) — regardless of current PnL — rather than risk being the one
+left holding after they've moved on.
+
+**"Don't hold too long" safeguards:**
+
+- `MAX_HOLD_TIME_MS` — the absolute backstop (unconditional): force-exit no
+  matter what once a position has been open this long.
+- `UNSUPPORTED_MAX_HOLD_MS` — a shorter cap that applies whenever no trusted
+  sniper is currently holding the token (whether one ever was, or never
+  was). Keeps a position from sitting around chasing a big target with zero
+  corroborating signal present right now.
+
+Set `DYNAMIC_TAKE_PROFIT_ENABLED=false` to go back to the original flat
+`TAKE_PROFIT_PCT` / `STOP_LOSS_PCT` behavior with no staged exits.
+
+**Worth understanding**: aiming for up to 150% instead of 20% means the
+remainder of a staged exit stays exposed to each token for longer, waiting
+for a bigger move — more time for a rug, a liquidity dry-up, or a reversal
+to happen. The breakeven stop and hold-time caps are the counterweights to
+that, and the default bias (take the full win at 50% unless the 80%-
+confidence + real market-cap-growth bar is cleared) exists specifically so
+the bot doesn't habitually risk a real gain chasing a bigger one.
 
 ## Dev reputation & adaptive tuning ("learning" — read this carefully)
 
@@ -135,7 +199,8 @@ modes. It is **not** accurate for **execution realism**:
   slippage setting), not a real competitive execution against other bots.
 - There's no simulated RPC/network latency or transaction-confirmation delay.
   Live, your stop-loss sell can take an extra block or two to land, during
-  which a bonding-curve token can move well past -2%.
+  which a bonding-curve token can move well past your configured
+  `STOP_LOSS_PCT`.
 - Failed/dropped transactions aren't modeled; live ones can fail and need
   retrying.
 - A total rug/liquidity-vanishing event still assumes an exit fill exists in
@@ -177,10 +242,16 @@ that's a "much later, after real data has piled up" thing, not a now thing).
   `MAX_DEV_HOLD_PCT` filter and volume threshold reduce exposure to the most
   obvious cases but do not make this safe — nothing prevents you from buying
   into a token that goes to zero a second later.
-- **A 2% stop-loss is often unenforceable in practice** on a bonding curve —
-  by the time your sell transaction lands, price may already be far past
-  where you tried to exit. Live losses can exceed your configured
-  `STOP_LOSS_PCT`.
+- **A stop-loss is often unenforceable in practice** on a bonding curve — by
+  the time your sell transaction lands, price may already be far past where
+  you tried to exit. Live losses can exceed your configured `STOP_LOSS_PCT`
+  (default 10%, raised from an earlier 2% default — still not a hard
+  ceiling on realized loss).
+- **The breakeven stop after a partial take-profit only protects the
+  remainder, not the whole trade.** If the partial sell already banked a
+  gain and the remainder round-trips to breakeven, the overall trade is
+  still net positive — but if a rug/liquidity event prevents the breakeven
+  sell from landing at all, the remainder can still go to zero.
 - **This bot has not been run against real funds or verified end-to-end
   against PumpPortal's live trade-execution endpoint** (the docs site
   couldn't be reliably fetched while building this — see code comments in
@@ -220,6 +291,7 @@ src/
   adaptiveTuner.ts    bounded rule-based filter tuning from realized win rate
   sniperReputation.ts per-sniper-wallet track record, trust classification
   sniperTracker.ts    cost-basis tracking on watched mints, round-trip PnL
+  confidence.ts       deterministic take-profit-target scoring formula
   pumpportal/
     socket.ts          PumpPortal websocket client with reconnect
     trade.ts           buy/sell execution (dry-run + live)

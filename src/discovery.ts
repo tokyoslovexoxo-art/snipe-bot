@@ -17,6 +17,7 @@ interface TrackedToken {
   createdAt: number;
   cumulativeVolumeSol: number;
   currentPricePerToken: number;
+  currentMarketCapSol: number;
 }
 
 export interface QualifiedSignal extends DecisionContext {
@@ -84,7 +85,8 @@ export class DiscoveryService extends EventEmitter {
     qualificationPath: QualificationPath,
     volumeAtQualificationSol: number,
     timeToQualifyMs: number,
-    triggeringSniperWallet: string | null
+    triggeringSniperWallet: string | null,
+    marketCapSolAtQualification: number
   ): DecisionContext {
     const devTrustLevel = creatorWallet ? this.devReputation.getTrustLevel(creatorWallet) : "neutral";
     const devRecord = creatorWallet ? this.devReputation.getRecord(creatorWallet) : undefined;
@@ -107,6 +109,7 @@ export class DiscoveryService extends EventEmitter {
       timeToQualifyMs,
       tunedMinVolumeSolAtBuy: tuned.minVolumeSol,
       tunedMaxDevHoldPctAtBuy: tuned.maxDevHoldPct,
+      marketCapSolAtQualification,
     };
   }
 
@@ -156,7 +159,8 @@ export class DiscoveryService extends EventEmitter {
         "dev_trusted",
         initialVolume,
         0,
-        null
+        null,
+        evt.marketCapSol ?? 0
       );
       this.emit("qualified", {
         mint: evt.mint,
@@ -178,6 +182,7 @@ export class DiscoveryService extends EventEmitter {
       createdAt: Date.now(),
       cumulativeVolumeSol: initialVolume,
       currentPricePerToken: currentPrice,
+      currentMarketCapSol: evt.marketCapSol ?? 0,
     };
     this.tracked.set(evt.mint, entry);
     this.socket.watchMint(evt.mint);
@@ -198,6 +203,9 @@ export class DiscoveryService extends EventEmitter {
     if (typeof evt.vSolInBondingCurve === "number" && typeof evt.vTokensInBondingCurve === "number") {
       entry.currentPricePerToken = priceFromCurve(evt.vSolInBondingCurve, evt.vTokensInBondingCurve);
     }
+    if (typeof evt.marketCapSol === "number") {
+      entry.currentMarketCapSol = evt.marketCapSol;
+    }
 
     this.maybeQualify(entry);
   }
@@ -217,7 +225,8 @@ export class DiscoveryService extends EventEmitter {
       "sniper_trusted",
       entry.cumulativeVolumeSol,
       Date.now() - entry.createdAt,
-      signal.wallet
+      signal.wallet,
+      entry.currentMarketCapSol
     );
     this.emit("qualified", {
       mint: entry.mint,
@@ -244,7 +253,8 @@ export class DiscoveryService extends EventEmitter {
       "volume",
       entry.cumulativeVolumeSol,
       Date.now() - entry.createdAt,
-      null
+      null,
+      entry.currentMarketCapSol
     );
     const signal: QualifiedSignal = {
       mint: entry.mint,

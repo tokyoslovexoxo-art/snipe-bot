@@ -10,9 +10,20 @@ interface CostBasis {
   totalSolSpent: number;
 }
 
+// Floating-point residue after repeated subtraction; treat anything at or
+// below this as "fully sold out" rather than requiring an exact zero.
+const DUST_THRESHOLD = 1e-9;
+
 export interface TrustedSniperBuySignal {
   mint: string;
   wallet: string;
+}
+
+export interface TrustedSniperSellSignal {
+  mint: string;
+  wallet: string;
+  remainingTokens: number;
+  fullyExited: boolean;
 }
 
 /**
@@ -50,6 +61,18 @@ export class SniperTracker extends EventEmitter {
   stopTracking(mint: string): void {
     this.active.delete(mint);
     this.costBasis.delete(mint);
+  }
+
+  /** Is any trusted sniper currently holding a nonzero balance of this mint? */
+  hasTrustedHolder(mint: string): boolean {
+    const mintBasis = this.costBasis.get(mint);
+    if (!mintBasis) return false;
+    for (const [wallet, basis] of mintBasis) {
+      if (basis.totalTokens > DUST_THRESHOLD && this.sniperReputation.isTrusted(wallet)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private handleTrade(evt: TokenTradeEvent): void {
@@ -90,6 +113,20 @@ export class SniperTracker extends EventEmitter {
       basis.totalSolSpent -= costOfSold;
 
       this.sniperReputation.recordRoundTrip(wallet, pnlSol, pnlSol > 0);
+
+      if (this.sniperReputation.isTrusted(wallet)) {
+        const fullyExited = basis.totalTokens <= DUST_THRESHOLD;
+        logger.info(
+          `Trusted sniper ${wallet.slice(0, 8)}... sold ${fullyExited ? "(fully exited)" : "(partial)"} ` +
+            `on a tracked launch (${evt.mint.slice(0, 8)}...).`
+        );
+        this.emit("trustedSell", {
+          mint: evt.mint,
+          wallet,
+          remainingTokens: basis.totalTokens,
+          fullyExited,
+        } as TrustedSniperSellSignal);
+      }
     }
   }
 }
