@@ -1,0 +1,25 @@
+{
+  "name": "snipe-bot",
+  "version": "1.0.0",
+  "description": "Pump.fun new-launch snipe bot with dry-run paper trading and live trading modes",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/ws": "^8.5.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.3"
+  }
+}
