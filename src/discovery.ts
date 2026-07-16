@@ -4,6 +4,7 @@ import { logger } from "./logger";
 import { PumpPortalSocket } from "./pumpportal/socket";
 import { DevReputationStore } from "./devReputation";
 import { AdaptiveTuner } from "./adaptiveTuner";
+import { SniperTracker, TrustedSniperBuySignal } from "./sniperTracker";
 import { NewTokenEvent, TokenTradeEvent } from "./types";
 
 interface TrackedToken {
@@ -39,7 +40,9 @@ function priceFromCurve(vSol: number, vTokens: number): number {
  * Creator wallets with a known-bad track record are skipped outright;
  * creator wallets with a known-good track record are fast-tracked (bought
  * immediately at launch instead of waiting for volume confirmation) — see
- * DevReputationStore.
+ * DevReputationStore. Separately, if a proven-profitable OTHER wallet
+ * (a "sniper", not the creator) buys into a token we're still watching, that
+ * also fast-tracks a buy — see SniperTracker.
  */
 export class DiscoveryService extends EventEmitter {
   private tracked = new Map<string, TrackedToken>();
@@ -48,7 +51,8 @@ export class DiscoveryService extends EventEmitter {
   constructor(
     private socket: PumpPortalSocket,
     private devReputation: DevReputationStore,
-    private tuner: AdaptiveTuner
+    private tuner: AdaptiveTuner,
+    private sniperTracker: SniperTracker
   ) {
     super();
   }
@@ -56,6 +60,9 @@ export class DiscoveryService extends EventEmitter {
   start(): void {
     this.socket.on("newToken", (evt: NewTokenEvent) => this.handleNewToken(evt));
     this.socket.on("trade", (evt: TokenTradeEvent) => this.handleTrade(evt));
+    this.sniperTracker.on("trustedBuy", (signal: TrustedSniperBuySignal) =>
+      this.handleTrustedSniperBuy(signal)
+    );
     this.socket.subscribeNewTokens();
     this.pruneInterval = setInterval(() => this.pruneStale(), 5_000);
   }
@@ -102,6 +109,7 @@ export class DiscoveryService extends EventEmitter {
           `has a strong track record with this bot, buying immediately without waiting for volume.`
       );
       this.socket.watchMint(evt.mint);
+      this.sniperTracker.startTracking(evt.mint, creatorWallet);
       this.emit("qualified", {
         mint: evt.mint,
         symbol,
@@ -124,6 +132,7 @@ export class DiscoveryService extends EventEmitter {
     };
     this.tracked.set(evt.mint, entry);
     this.socket.watchMint(evt.mint);
+    this.sniperTracker.startTracking(evt.mint, creatorWallet);
 
     logger.info(
       `New launch: ${entry.symbol} (${entry.mint.slice(0, 8)}...) initial volume ${initialVolume.toFixed(3)} SOL`
@@ -142,6 +151,24 @@ export class DiscoveryService extends EventEmitter {
     }
 
     this.maybeQualify(entry);
+  }
+
+  private handleTrustedSniperBuy(signal: TrustedSniperBuySignal): void {
+    const entry = this.tracked.get(signal.mint);
+    if (!entry) return; // already qualified/pruned, or dev-fast-tracked already
+
+    this.tracked.delete(signal.mint);
+    logger.info(
+      `FAST-TRACK: ${entry.symbol} (${signal.mint.slice(0, 8)}...) — trusted sniper ` +
+        `${signal.wallet.slice(0, 8)}... just bought in.`
+    );
+    this.emit("qualified", {
+      mint: entry.mint,
+      symbol: entry.symbol,
+      name: entry.name,
+      creatorWallet: entry.creatorWallet,
+      currentPricePerToken: entry.currentPricePerToken,
+    } as QualifiedSignal);
   }
 
   private maybeQualify(entry: TrackedToken): void {
@@ -170,6 +197,7 @@ export class DiscoveryService extends EventEmitter {
       if (now - entry.createdAt >= config.volumeWindowMs) {
         this.tracked.delete(mint);
         this.socket.unwatchMint(mint);
+        this.sniperTracker.stopTracking(mint);
         logger.info(
           `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): only reached ` +
             `${entry.cumulativeVolumeSol.toFixed(3)}/${minVolumeSol.toFixed(3)} SOL volume in ${config.volumeWindowMs}ms`

@@ -7,6 +7,8 @@ import { DiscoveryService, QualifiedSignal } from "./discovery";
 import { PositionManager } from "./positionManager";
 import { DevReputationStore } from "./devReputation";
 import { AdaptiveTuner } from "./adaptiveTuner";
+import { SniperReputationStore } from "./sniperReputation";
+import { SniperTracker } from "./sniperTracker";
 
 function printBanner(): void {
   const lines = [
@@ -21,6 +23,7 @@ function printBanner(): void {
     ` Max dev hold:    ${config.maxDevHoldPct}% (anti-rug filter)`,
     ` Dev tracking:    ${config.devTrackingEnabled ? "on" : "off"} (remembers devs across restarts)`,
     ` Adaptive tuning: ${config.adaptiveTuningEnabled ? "on" : "off"} (bounded, rule-based filter nudging)`,
+    ` Sniper tracking: ${config.sniperTrackingEnabled ? "on" : "off"}${config.prioritySniperWallets.length > 0 ? ` (${config.prioritySniperWallets.length} priority wallet(s) seeded)` : ""}`,
     "==================================================",
   ];
   for (const line of lines) logger.info(line);
@@ -43,8 +46,10 @@ async function main(): Promise<void> {
   const trader = new Trader(paperWallet);
   const devReputation = new DevReputationStore();
   const tuner = new AdaptiveTuner();
-  const discovery = new DiscoveryService(socket, devReputation, tuner);
-  const positionManager = new PositionManager(socket, trader, devReputation, tuner);
+  const sniperReputation = new SniperReputationStore();
+  const sniperTracker = new SniperTracker(socket, sniperReputation);
+  const discovery = new DiscoveryService(socket, devReputation, tuner, sniperTracker);
+  const positionManager = new PositionManager(socket, trader, devReputation, tuner, sniperTracker);
 
   discovery.on("qualified", (signal: QualifiedSignal) => {
     void positionManager.onQualified(signal);
@@ -52,10 +57,12 @@ async function main(): Promise<void> {
 
   discovery.start();
   positionManager.start();
+  sniperTracker.start();
   socket.connect();
 
   const reportInterval = setInterval(() => {
     const devSummary = devReputation.summary();
+    const sniperSummary = sniperReputation.summary();
     const tuned = tuner.get();
     const balanceLine = config.dryRun
       ? `Paper balance: ${paperWallet!.solBalance.toFixed(4)} SOL | `
@@ -63,6 +70,7 @@ async function main(): Promise<void> {
     logger.info(
       `[STATUS] ${balanceLine}Open positions: ${positionManager.openCount} | ` +
         `Known devs: ${devSummary.totalDevs} (${devSummary.trusted} trusted, ${devSummary.blacklisted} blacklisted) | ` +
+        `Known snipers: ${sniperSummary.totalSnipers} (${sniperSummary.trusted} trusted) | ` +
         `Tuned filters: minVolume=${tuned.minVolumeSol.toFixed(3)} SOL, maxDevHold=${tuned.maxDevHoldPct.toFixed(1)}%`
     );
   }, 30_000);

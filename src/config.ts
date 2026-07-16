@@ -69,6 +69,17 @@ export const config = {
   // samples and a higher win rate than the dev-trust thresholds.
   sniperTrustMinSamples: num("SNIPER_TRUST_MIN_SAMPLES", 3),
   sniperTrustMinWinRatePct: num("SNIPER_TRUST_MIN_WIN_RATE_PCT", 80),
+  // Wallets manually seeded as trusted immediately (comma-separated), e.g.
+  // one you've observed being consistently profitable elsewhere. Trusted
+  // "until proven otherwise": once we've actually observed enough of their
+  // round-trips ourselves, if their real performance is bad they lose this
+  // free pass (see sniperRevoke* below) — it is not a permanent override.
+  prioritySniperWallets: (process.env.PRIORITY_SNIPER_WALLETS ?? "")
+    .split(",")
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0),
+  sniperRevokeMinSamples: num("SNIPER_REVOKE_MIN_SAMPLES", 3),
+  sniperRevokeMaxWinRatePct: num("SNIPER_REVOKE_MAX_WIN_RATE_PCT", 40),
 };
 
 export function assertLiveConfig(): void {

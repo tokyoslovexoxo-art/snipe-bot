@@ -32,6 +32,10 @@ net.
   fast-tracking known-good ones.
 - **Adaptive tuning** (see below): nudges the volume/dev-hold entry filters
   based on realized win rate, within bounded limits.
+- **Sniper reputation** (see below): remembers OTHER wallets (not creators)
+  that buy into tokens the bot is watching, scored on real observed
+  round-trip PnL, and fast-tracks a buy when a proven-profitable wallet buys
+  into a token you're already tracking.
 
 ## Dev reputation & adaptive tuning ("learning" — read this carefully)
 
@@ -55,15 +59,39 @@ accumulates real trade outcomes, persisted in `data/` across restarts:
   `TAKE_PROFIT_PCT` / `STOP_LOSS_PCT` — your exit economics stay exactly
   what you set.
 
-**What this is not**: neither of these is a machine-learning model. Both are
-plain counters and threshold checks — every decision they make is visible in
-the logs with the exact stat that triggered it, and you can inspect or hand-
-edit `data/devs.json` / `data/tuning.json` directly. This was a deliberate
-choice over a black-box model: a bot this selective will only see a handful
-of qualifying trades a day, nowhere near enough data for a real model to
-find genuine signal instead of noise. Treat these as slow-moving, bounded
-safety adjustments — not fast learning, and not a guarantee that "day 30" is
-meaningfully better than "day 1."
+- **`src/sniperReputation.ts` / `src/sniperTracker.ts`**: while the bot is
+  watching a mint (from launch through however long discovery or an open
+  position keeps it subscribed), it records every OTHER wallet's buys with
+  their cost basis. If that same wallet sells before we stop watching, we
+  compute their *actual realized PnL* on that round trip — not a proxy — and
+  feed it into their reputation. Once a wallet has enough observed round
+  trips (`SNIPER_TRUST_MIN_SAMPLES`) at a high enough win rate
+  (`SNIPER_TRUST_MIN_WIN_RATE_PCT`), it's trusted, and the bot buys
+  immediately whenever that wallet buys into a token it's tracking.
+  - **Manual seeding**: set `PRIORITY_SNIPER_WALLETS` (comma-separated) to
+    treat specific wallets as trusted immediately, on your own say-so,
+    without waiting to earn it. This is "trusted until proven otherwise,"
+    not permanent: once the bot has actually observed enough of that
+    wallet's own round-trips (`SNIPER_REVOKE_MIN_SAMPLES`) and their real
+    performance is bad (at/below `SNIPER_REVOKE_MAX_WIN_RATE_PCT`), the free
+    pass is revoked and it falls back to normal (unearned) status.
+  - **Sampling limitation, worth understanding**: we only ever see the
+    slice of a sniper's activity that happens while we're actively watching
+    a given mint. A sniper who holds longer than our watch window, or exits
+    after we've stopped watching, is invisible to us for that trade — so
+    the sample is biased toward wallets that exit fast, and a wallet's
+    real-world track record (e.g. one you've seen quoted elsewhere) can
+    differ from what this bot itself observes and scores.
+
+**What this is not**: none of these three are a machine-learning model. All
+are plain counters and threshold checks — every decision is visible in the
+logs with the exact stat that triggered it, and you can inspect or hand-edit
+`data/devs.json` / `data/tuning.json` / `data/snipers.json` directly. This
+was a deliberate choice over a black-box model: a bot this selective will
+only see a handful of qualifying trades a day, nowhere near enough data for
+a real model to find genuine signal instead of noise. Treat these as
+slow-moving, bounded safety adjustments — not fast learning, and not a
+guarantee that "day 30" is meaningfully better than "day 1."
 
 ## Setup
 
@@ -142,6 +170,14 @@ forecast.
   entirely.** A dev can look good on 2 small trades and still rug their 3rd
   token — trust classification is based on very few samples early on. Raise
   `TRUST_MIN_SAMPLES` if you want more evidence required before fast-tracking.
+- **The same applies to sniper fast-tracking, more so for
+  `PRIORITY_SNIPER_WALLETS`.** A manually-seeded wallet is trusted
+  immediately on your say-so alone, with zero trades observed by this bot —
+  if the claim behind it is wrong, outdated, or was itself an automated bot
+  that gets retuned or stops working, you won't find out until real losses
+  accumulate. `MIN_VOLUME_SOL=0.2` also means the bot buys on much thinner
+  confirmation than the original 1 SOL default — expect more false positives
+  (rugs that briefly look active) in exchange for catching things earlier.
 
 ## Project layout
 
@@ -156,10 +192,12 @@ src/
   positionManager.ts  open-position tracking, TP/SL/time-exit logic
   devReputation.ts    per-creator-wallet track record, trust classification
   adaptiveTuner.ts    bounded rule-based filter tuning from realized win rate
+  sniperReputation.ts per-sniper-wallet track record, trust classification
+  sniperTracker.ts    cost-basis tracking on watched mints, round-trip PnL
   pumpportal/
     socket.ts          PumpPortal websocket client with reconnect
     trade.ts           buy/sell execution (dry-run + live)
   index.ts             entrypoint, wiring, graceful shutdown
 
-data/                  runtime state (gitignored): devs.json, tuning.json
+data/                  runtime state (gitignored): devs.json, tuning.json, snipers.json
 ```

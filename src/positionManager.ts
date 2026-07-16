@@ -4,6 +4,7 @@ import { PumpPortalSocket } from "./pumpportal/socket";
 import { Trader } from "./pumpportal/trade";
 import { DevReputationStore } from "./devReputation";
 import { AdaptiveTuner } from "./adaptiveTuner";
+import { SniperTracker } from "./sniperTracker";
 import { ClosedPosition, ExitReason, Position, TokenTradeEvent } from "./types";
 import { QualifiedSignal } from "./discovery";
 
@@ -26,7 +27,8 @@ export class PositionManager {
     private socket: PumpPortalSocket,
     private trader: Trader,
     private devReputation: DevReputationStore,
-    private tuner: AdaptiveTuner
+    private tuner: AdaptiveTuner,
+    private sniperTracker: SniperTracker
   ) {}
 
   start(): void {
@@ -133,6 +135,7 @@ export class PositionManager {
 
       this.positions.delete(position.mint);
       this.socket.unwatchMint(position.mint);
+      this.sniperTracker.stopTracking(position.mint);
 
       const pnlSol = result.filledSol - position.solSpent;
       const pnlPct = (pnlSol / position.solSpent) * 100;
