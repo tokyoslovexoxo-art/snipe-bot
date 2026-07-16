@@ -71,6 +71,15 @@ export interface DevRecord {
 
 export type TrustLevel = "blacklisted" | "trusted" | "neutral";
 
+export interface SniperRecord {
+  wallet: string;
+  roundTrips: number;
+  wins: number;
+  losses: number;
+  totalPnlSol: number;
+  lastSeenAt: number;
+}
+
 export interface ClosedPosition extends Position {
   closedAt: number;
   exitReason: ExitReason;

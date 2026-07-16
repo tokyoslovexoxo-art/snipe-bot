@@ -29,7 +29,7 @@ export const config = {
   buyAmountSol: num("BUY_AMOUNT_SOL", 1),
   takeProfitPct: num("TAKE_PROFIT_PCT", 20),
   stopLossPct: num("STOP_LOSS_PCT", 2),
-  minVolumeSol: num("MIN_VOLUME_SOL", 1),
+  minVolumeSol: num("MIN_VOLUME_SOL", 0.2),
   volumeWindowMs: num("VOLUME_WINDOW_MS", 60_000),
   maxConcurrentPositions: num("MAX_CONCURRENT_POSITIONS", 3),
   maxHoldTimeMs: num("MAX_HOLD_TIME_MS", 600_000),
@@ -58,6 +58,17 @@ export const config = {
   // Tuned minVolumeSol/maxDevHoldPct can never drift more than this percent
   // away from your .env baseline values, in either direction.
   tuningMaxAdjustPct: num("TUNING_MAX_ADJUST_PCT", 40),
+
+  // ==== Sniper (other buyer wallet) reputation tracking ====
+  // Watches other wallets buying/selling on tokens we're already watching,
+  // and scores them on REALIZED round-trip PnL for the portion of that we
+  // actually observe (see README for the partial-sample caveat).
+  sniperTrackingEnabled: bool("SNIPER_TRACKING_ENABLED", true),
+  sniperStoreFile: process.env.SNIPER_STORE_FILE ?? "data/snipers.json",
+  // "Really profitable all the time" is a high bar by design — require more
+  // samples and a higher win rate than the dev-trust thresholds.
+  sniperTrustMinSamples: num("SNIPER_TRUST_MIN_SAMPLES", 3),
+  sniperTrustMinWinRatePct: num("SNIPER_TRUST_MIN_WIN_RATE_PCT", 80),
 };
 
 export function assertLiveConfig(): void {
