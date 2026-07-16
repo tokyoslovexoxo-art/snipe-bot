@@ -2,12 +2,15 @@ import { EventEmitter } from "events";
 import { config } from "./config";
 import { logger } from "./logger";
 import { PumpPortalSocket } from "./pumpportal/socket";
+import { DevReputationStore } from "./devReputation";
+import { AdaptiveTuner } from "./adaptiveTuner";
 import { NewTokenEvent, TokenTradeEvent } from "./types";
 
 interface TrackedToken {
   mint: string;
   symbol: string;
   name: string;
+  creatorWallet: string;
   createdAt: number;
   cumulativeVolumeSol: number;
   currentPricePerToken: number;
@@ -17,6 +20,7 @@ export interface QualifiedSignal {
   mint: string;
   symbol: string;
   name: string;
+  creatorWallet: string;
   currentPricePerToken: number;
 }
 
@@ -28,14 +32,24 @@ function priceFromCurve(vSol: number, vTokens: number): number {
 /**
  * Watches new pump.fun launches, tracks cumulative bonding-curve volume per
  * token, applies safety filters, and emits "qualified" once a token clears
- * MIN_VOLUME_SOL within VOLUME_WINDOW_MS. Tokens that never clear the bar in
- * time are dropped (and unwatched) to keep the subscription set bounded.
+ * the (adaptively tuned) minimum volume within VOLUME_WINDOW_MS. Tokens that
+ * never clear the bar in time are dropped (and unwatched) to keep the
+ * subscription set bounded.
+ *
+ * Creator wallets with a known-bad track record are skipped outright;
+ * creator wallets with a known-good track record are fast-tracked (bought
+ * immediately at launch instead of waiting for volume confirmation) — see
+ * DevReputationStore.
  */
 export class DiscoveryService extends EventEmitter {
   private tracked = new Map<string, TrackedToken>();
   private pruneInterval: NodeJS.Timeout | null = null;
 
-  constructor(private socket: PumpPortalSocket) {
+  constructor(
+    private socket: PumpPortalSocket,
+    private devReputation: DevReputationStore,
+    private tuner: AdaptiveTuner
+  ) {
     super();
   }
 
@@ -53,26 +67,57 @@ export class DiscoveryService extends EventEmitter {
   private handleNewToken(evt: NewTokenEvent): void {
     if (!evt.mint || typeof evt.vSolInBondingCurve !== "number") return;
 
+    const creatorWallet = evt.traderPublicKey ?? "";
+    if (creatorWallet) this.devReputation.recordLaunch(creatorWallet);
+
+    const trustLevel = creatorWallet ? this.devReputation.getTrustLevel(creatorWallet) : "neutral";
+    if (trustLevel === "blacklisted") {
+      logger.info(
+        `Skipping ${evt.symbol ?? evt.mint}: creator ${creatorWallet.slice(0, 8)}... has a poor track record with this bot.`
+      );
+      return;
+    }
+
+    const maxDevHoldPct = this.tuner.get().maxDevHoldPct;
     const devTokens = evt.initialBuy ?? 0;
     const curveTokensAfterDevBuy = evt.vTokensInBondingCurve ?? 0;
     const devHoldPct =
       devTokens > 0 ? (devTokens / (curveTokensAfterDevBuy + devTokens)) * 100 : 0;
 
-    if (devHoldPct > config.maxDevHoldPct) {
+    if (devHoldPct > maxDevHoldPct) {
       logger.info(
         `Skipping ${evt.symbol ?? evt.mint}: creator holds ~${devHoldPct.toFixed(1)}% of supply ` +
-          `(max allowed ${config.maxDevHoldPct}%) — likely rug risk.`
+          `(max allowed ${maxDevHoldPct.toFixed(1)}%) — likely rug risk.`
       );
       return;
     }
 
-    const initialVolume = evt.solAmount ?? 0;
     const currentPrice = priceFromCurve(evt.vSolInBondingCurve, evt.vTokensInBondingCurve);
+    const symbol = evt.symbol ?? "?";
+    const name = evt.name ?? "?";
 
+    if (trustLevel === "trusted") {
+      logger.info(
+        `FAST-TRACK: ${symbol} (${evt.mint.slice(0, 8)}...) — creator ${creatorWallet.slice(0, 8)}... ` +
+          `has a strong track record with this bot, buying immediately without waiting for volume.`
+      );
+      this.socket.watchMint(evt.mint);
+      this.emit("qualified", {
+        mint: evt.mint,
+        symbol,
+        name,
+        creatorWallet,
+        currentPricePerToken: currentPrice,
+      } as QualifiedSignal);
+      return;
+    }
+
+    const initialVolume = evt.solAmount ?? 0;
     const entry: TrackedToken = {
       mint: evt.mint,
-      symbol: evt.symbol ?? "?",
-      name: evt.name ?? "?",
+      symbol,
+      name,
+      creatorWallet,
       createdAt: Date.now(),
       cumulativeVolumeSol: initialVolume,
       currentPricePerToken: currentPrice,
@@ -100,17 +145,19 @@ export class DiscoveryService extends EventEmitter {
   }
 
   private maybeQualify(entry: TrackedToken): void {
-    if (entry.cumulativeVolumeSol < config.minVolumeSol) return;
+    const minVolumeSol = this.tuner.get().minVolumeSol;
+    if (entry.cumulativeVolumeSol < minVolumeSol) return;
 
     this.tracked.delete(entry.mint);
     logger.info(
-      `QUALIFIED: ${entry.symbol} (${entry.mint.slice(0, 8)}...) crossed ${config.minVolumeSol} SOL ` +
+      `QUALIFIED: ${entry.symbol} (${entry.mint.slice(0, 8)}...) crossed ${minVolumeSol.toFixed(3)} SOL ` +
         `volume (${entry.cumulativeVolumeSol.toFixed(3)} SOL) in ${Date.now() - entry.createdAt}ms`
     );
     const signal: QualifiedSignal = {
       mint: entry.mint,
       symbol: entry.symbol,
       name: entry.name,
+      creatorWallet: entry.creatorWallet,
       currentPricePerToken: entry.currentPricePerToken,
     };
     this.emit("qualified", signal);
@@ -118,13 +165,14 @@ export class DiscoveryService extends EventEmitter {
 
   private pruneStale(): void {
     const now = Date.now();
+    const minVolumeSol = this.tuner.get().minVolumeSol;
     for (const [mint, entry] of this.tracked) {
       if (now - entry.createdAt >= config.volumeWindowMs) {
         this.tracked.delete(mint);
         this.socket.unwatchMint(mint);
         logger.info(
           `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): only reached ` +
-            `${entry.cumulativeVolumeSol.toFixed(3)}/${config.minVolumeSol} SOL volume in ${config.volumeWindowMs}ms`
+            `${entry.cumulativeVolumeSol.toFixed(3)}/${minVolumeSol.toFixed(3)} SOL volume in ${config.volumeWindowMs}ms`
         );
       }
     }

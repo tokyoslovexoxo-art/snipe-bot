@@ -27,6 +27,43 @@ net.
   "local transaction" API — PumpPortal returns an unsigned transaction, this
   bot signs it locally with your keypair and broadcasts it via your own RPC.
   **Your private key never leaves your machine / gets sent to PumpPortal.**
+- **Dev reputation** (see below): remembers each token creator's track
+  record with the bot across restarts, skipping known-bad creators and
+  fast-tracking known-good ones.
+- **Adaptive tuning** (see below): nudges the volume/dev-hold entry filters
+  based on realized win rate, within bounded limits.
+
+## Dev reputation & adaptive tuning ("learning" — read this carefully)
+
+Two mechanisms let the bot improve its entry decisions over time as it
+accumulates real trade outcomes, persisted in `data/` across restarts:
+
+- **`src/devReputation.ts`**: tracks each token creator wallet's history
+  with the bot — tokens launched, tokens bought, wins, losses, total PnL.
+  Once a creator has enough resolved trades (`TRUST_MIN_SAMPLES` /
+  `BLACKLIST_MIN_SAMPLES`), they're classified:
+  - **Blacklisted** (win rate below `BLACKLIST_MAX_WIN_RATE_PCT`): their
+    future launches are skipped entirely.
+  - **Trusted** (win rate at/above `TRUST_MIN_WIN_RATE_PCT`): their next
+    launch is bought immediately at creation, skipping the volume-wait —
+    the actual edge of "recognizing a good dev" is reacting faster on a
+    source you already trust.
+- **`src/adaptiveTuner.ts`**: after every `TUNING_WINDOW_TRADES` closed
+  trades, looks at the realized win rate and nudges `MIN_VOLUME_SOL` /
+  `MAX_DEV_HOLD_PCT` tighter or looser, clamped to never drift more than
+  `TUNING_MAX_ADJUST_PCT` away from your `.env` baselines. It never touches
+  `TAKE_PROFIT_PCT` / `STOP_LOSS_PCT` — your exit economics stay exactly
+  what you set.
+
+**What this is not**: neither of these is a machine-learning model. Both are
+plain counters and threshold checks — every decision they make is visible in
+the logs with the exact stat that triggered it, and you can inspect or hand-
+edit `data/devs.json` / `data/tuning.json` directly. This was a deliberate
+choice over a black-box model: a bot this selective will only see a handful
+of qualifying trades a day, nowhere near enough data for a real model to
+find genuine signal instead of noise. Treat these as slow-moving, bounded
+safety adjustments — not fast learning, and not a guarantee that "day 30" is
+meaningfully better than "day 1."
 
 ## Setup
 
@@ -101,6 +138,10 @@ forecast.
 - Only risk money you can afford to lose entirely, and start with the
   smallest `BUY_AMOUNT_SOL` and `MAX_CONCURRENT_POSITIONS` you're willing to
   test with before scaling up.
+- **The "trusted dev" fast-track skips the volume-confirmation wait
+  entirely.** A dev can look good on 2 small trades and still rug their 3rd
+  token — trust classification is based on very few samples early on. Raise
+  `TRUST_MIN_SAMPLES` if you want more evidence required before fast-tracking.
 
 ## Project layout
 
@@ -113,8 +154,12 @@ src/
   paperWallet.ts       virtual balance ledger (dry-run mode)
   discovery.ts        new-token tracking, volume filter, anti-rug filter
   positionManager.ts  open-position tracking, TP/SL/time-exit logic
+  devReputation.ts    per-creator-wallet track record, trust classification
+  adaptiveTuner.ts    bounded rule-based filter tuning from realized win rate
   pumpportal/
     socket.ts          PumpPortal websocket client with reconnect
     trade.ts           buy/sell execution (dry-run + live)
   index.ts             entrypoint, wiring, graceful shutdown
+
+data/                  runtime state (gitignored): devs.json, tuning.json
 ```

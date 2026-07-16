@@ -2,6 +2,8 @@ import { config } from "./config";
 import { logger } from "./logger";
 import { PumpPortalSocket } from "./pumpportal/socket";
 import { Trader } from "./pumpportal/trade";
+import { DevReputationStore } from "./devReputation";
+import { AdaptiveTuner } from "./adaptiveTuner";
 import { ClosedPosition, ExitReason, Position, TokenTradeEvent } from "./types";
 import { QualifiedSignal } from "./discovery";
 
@@ -20,7 +22,12 @@ export class PositionManager {
   private closing = new Set<string>();
   private holdTimeCheck: NodeJS.Timeout | null = null;
 
-  constructor(private socket: PumpPortalSocket, private trader: Trader) {}
+  constructor(
+    private socket: PumpPortalSocket,
+    private trader: Trader,
+    private devReputation: DevReputationStore,
+    private tuner: AdaptiveTuner
+  ) {}
 
   start(): void {
     this.socket.on("trade", (evt: TokenTradeEvent) => this.handleTrade(evt));
@@ -51,12 +58,14 @@ export class PositionManager {
     }
 
     this.socket.watchMint(signal.mint);
+    if (signal.creatorWallet) this.devReputation.recordBuy(signal.creatorWallet);
 
     const now = Date.now();
     const position: Position = {
       mint: signal.mint,
       symbol: signal.symbol,
       name: signal.name,
+      creatorWallet: signal.creatorWallet,
       entryPricePerToken: result.pricePerToken,
       tokenAmount: result.filledTokens,
       solSpent: result.filledSol,
@@ -137,6 +146,11 @@ export class PositionManager {
         pnlPct,
       };
       logger.trade(closed);
+
+      if (position.creatorWallet) {
+        this.devReputation.recordOutcome(position.creatorWallet, pnlSol, pnlSol > 0);
+      }
+      this.tuner.recordClose(closed);
     } finally {
       this.closing.delete(position.mint);
     }

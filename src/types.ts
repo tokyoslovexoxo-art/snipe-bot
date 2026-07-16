@@ -50,6 +50,7 @@ export interface Position {
   mint: string;
   symbol: string;
   name: string;
+  creatorWallet: string;
   entryPricePerToken: number;
   tokenAmount: number;
   solSpent: number;
@@ -57,6 +58,18 @@ export interface Position {
   currentPricePerToken: number;
   lastUpdatedAt: number;
 }
+
+export interface DevRecord {
+  wallet: string;
+  tokensLaunched: number;
+  tokensBought: number;
+  wins: number;
+  losses: number;
+  totalPnlSol: number;
+  lastSeenAt: number;
+}
+
+export type TrustLevel = "blacklisted" | "trusted" | "neutral";
 
 export interface ClosedPosition extends Position {
   closedAt: number;

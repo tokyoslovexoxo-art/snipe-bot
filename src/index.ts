@@ -5,6 +5,8 @@ import { Trader } from "./pumpportal/trade";
 import { PaperWallet } from "./paperWallet";
 import { DiscoveryService, QualifiedSignal } from "./discovery";
 import { PositionManager } from "./positionManager";
+import { DevReputationStore } from "./devReputation";
+import { AdaptiveTuner } from "./adaptiveTuner";
 
 function printBanner(): void {
   const lines = [
@@ -17,6 +19,8 @@ function printBanner(): void {
     ` Min volume:      ${config.minVolumeSol} SOL within ${config.volumeWindowMs / 1000}s of launch`,
     ` Max positions:   ${config.maxConcurrentPositions}`,
     ` Max dev hold:    ${config.maxDevHoldPct}% (anti-rug filter)`,
+    ` Dev tracking:    ${config.devTrackingEnabled ? "on" : "off"} (remembers devs across restarts)`,
+    ` Adaptive tuning: ${config.adaptiveTuningEnabled ? "on" : "off"} (bounded, rule-based filter nudging)`,
     "==================================================",
   ];
   for (const line of lines) logger.info(line);
@@ -37,8 +41,10 @@ async function main(): Promise<void> {
   const socket = new PumpPortalSocket();
   const paperWallet = config.dryRun ? new PaperWallet() : null;
   const trader = new Trader(paperWallet);
-  const discovery = new DiscoveryService(socket);
-  const positionManager = new PositionManager(socket, trader);
+  const devReputation = new DevReputationStore();
+  const tuner = new AdaptiveTuner();
+  const discovery = new DiscoveryService(socket, devReputation, tuner);
+  const positionManager = new PositionManager(socket, trader, devReputation, tuner);
 
   discovery.on("qualified", (signal: QualifiedSignal) => {
     void positionManager.onQualified(signal);
@@ -48,14 +54,19 @@ async function main(): Promise<void> {
   positionManager.start();
   socket.connect();
 
-  if (config.dryRun) {
-    const reportInterval = setInterval(() => {
-      logger.info(
-        `[DRY RUN] Paper balance: ${paperWallet!.solBalance.toFixed(4)} SOL | Open positions: ${positionManager.openCount}`
-      );
-    }, 30_000);
-    reportInterval.unref();
-  }
+  const reportInterval = setInterval(() => {
+    const devSummary = devReputation.summary();
+    const tuned = tuner.get();
+    const balanceLine = config.dryRun
+      ? `Paper balance: ${paperWallet!.solBalance.toFixed(4)} SOL | `
+      : "";
+    logger.info(
+      `[STATUS] ${balanceLine}Open positions: ${positionManager.openCount} | ` +
+        `Known devs: ${devSummary.totalDevs} (${devSummary.trusted} trusted, ${devSummary.blacklisted} blacklisted) | ` +
+        `Tuned filters: minVolume=${tuned.minVolumeSol.toFixed(3)} SOL, maxDevHold=${tuned.maxDevHoldPct.toFixed(1)}%`
+    );
+  }, 30_000);
+  reportInterval.unref();
 
   const shutdown = () => {
     logger.info("Shutting down...");

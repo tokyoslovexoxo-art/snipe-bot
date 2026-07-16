@@ -39,6 +39,25 @@ export const config = {
   pool: process.env.POOL ?? "pump",
 
   logFile: process.env.LOG_FILE ?? "trades.jsonl",
+
+  // ==== Dev reputation tracking ====
+  devTrackingEnabled: bool("DEV_TRACKING_ENABLED", true),
+  devStoreFile: process.env.DEV_STORE_FILE ?? "data/devs.json",
+  // A dev needs at least this many resolved (bought) trades before we'll
+  // classify them as trusted or blacklisted at all.
+  trustMinSamples: num("TRUST_MIN_SAMPLES", 2),
+  trustMinWinRatePct: num("TRUST_MIN_WIN_RATE_PCT", 60),
+  blacklistMinSamples: num("BLACKLIST_MIN_SAMPLES", 2),
+  blacklistMaxWinRatePct: num("BLACKLIST_MAX_WIN_RATE_PCT", 25),
+
+  // ==== Adaptive filter tuning ====
+  adaptiveTuningEnabled: bool("ADAPTIVE_TUNING_ENABLED", true),
+  tuningStoreFile: process.env.TUNING_STORE_FILE ?? "data/tuning.json",
+  // Re-evaluate filters after this many closed trades.
+  tuningWindowTrades: num("TUNING_WINDOW_TRADES", 20),
+  // Tuned minVolumeSol/maxDevHoldPct can never drift more than this percent
+  // away from your .env baseline values, in either direction.
+  tuningMaxAdjustPct: num("TUNING_MAX_ADJUST_PCT", 40),
 };
 
 export function assertLiveConfig(): void {
