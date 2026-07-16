@@ -196,6 +196,51 @@ counts each trade's final exit row (a staged partial-take-profit exit logs
 an intermediate row too, but its result is already folded into the final
 row's cumulative PnL — see the trade log section below).
 
+## Web dashboard
+
+A read-only status page you view in a browser, as an alternative to reading
+terminal output. It's a **separate process** from the bot — it only ever
+reads the files the bot already writes (`data/status.json`, `trades.jsonl`)
+and never touches trading logic or state.
+
+Set real credentials in your `.env` first (the `.env.example` placeholders
+are `changeme` — **do not leave them as-is, and never commit real
+credentials into `.env.example`**, only your own untracked `.env`):
+
+```
+DASHBOARD_USERNAME=your-username
+DASHBOARD_PASSWORD=your-password
+DASHBOARD_PORT=3000
+```
+
+Run it (while the bot is also running, so there's data to show):
+
+```bash
+npm run dashboard
+```
+
+Open `http://<server-ip>:3000` in a browser — it'll prompt for the
+username/password you set, using your browser's built-in login prompt
+(HTTP Basic Auth), then show open positions, recent trades, and PnL
+summaries, auto-refreshing every 10 seconds.
+
+**Security note — read before exposing this on a public server:** HTTP
+Basic Auth sends your credentials base64-encoded, which is easily
+decodable, not encrypted. That's fine over `localhost` or through an SSH
+tunnel, but if you open `DASHBOARD_PORT` directly to the public internet
+over plain HTTP, anyone who intercepts the traffic (e.g. on the same
+network, or a malicious router in the path) can read the credentials in
+plain text. The safe way to reach it on a remote server (like Oracle
+Cloud) is an SSH tunnel instead of opening the firewall port:
+
+```bash
+ssh -i /path/to/your-key -L 3000:localhost:3000 ubuntu@<server-ip>
+```
+
+Then open `http://localhost:3000` on **your own machine** — the tunnel
+carries the connection securely over SSH, and you never need to expose the
+port publicly at all.
+
 ## Dry-run (paper trading) mode
 
 With `DRY_RUN=true` (the default), the bot runs against the **same live
@@ -296,7 +341,10 @@ src/
   config.ts           env var loading / validation
   types.ts            shared types (events, positions, trade results)
   logger.ts           console + JSONL trade logging
+  pnlStats.ts         shared PnL summary logic (used by report.ts + dashboard)
   report.ts           standalone PnL summary over trades.jsonl (npm run report)
+  dashboardServer.ts  read-only web dashboard, HTTP Basic Auth (npm run dashboard)
+  dashboard.html      dashboard page markup/styles/client-side JS
   wallet.ts           keypair + Solana RPC connection (live mode)
   paperWallet.ts       virtual balance ledger (dry-run mode)
   discovery.ts        new-token tracking, volume filter, anti-rug filter
@@ -311,5 +359,5 @@ src/
     trade.ts           buy/sell execution (dry-run + live)
   index.ts             entrypoint, wiring, graceful shutdown
 
-data/                  runtime state (gitignored): devs.json, tuning.json, snipers.json
+data/                  runtime state (gitignored): devs.json, tuning.json, snipers.json, status.json
 ```

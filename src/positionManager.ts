@@ -48,6 +48,11 @@ export class PositionManager {
     return this.positions.size;
   }
 
+  /** Read-only snapshot of currently open positions, for status/dashboard use. */
+  getOpenPositions(): Position[] {
+    return [...this.positions.values()].map((p) => ({ ...p }));
+  }
+
   async onQualified(signal: QualifiedSignal): Promise<void> {
     if (this.positions.has(signal.mint)) return;
     if (this.positions.size >= config.maxConcurrentPositions) {

@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>snipe-bot dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0e14;
+    --panel: #131722;
+    --border: #232838;
+    --text: #e6e9ef;
+    --muted: #8a93a6;
+    --green: #3ddc84;
+    --red: #ff5c5c;
+    --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 4px 0; }
+  .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .badge.dry { background: #1f3a2e; color: var(--green); }
+  .badge.live { background: #3a1f1f; color: var(--red); }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 1.4rem; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  section { margin-bottom: 28px; }
+  section h2 { font-size: 1rem; margin: 0 0 10px 0; color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .empty { color: var(--muted); font-size: 0.85rem; padding: 12px 0; }
+  .mono { font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .table-wrap table { margin: 0; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>snipe-bot dashboard <span id="modeBadge"></span></h1>
+  <div class="subtitle" id="lastUpdated">Loading...</div>
+
+  <div class="cards" id="summaryCards"></div>
+
+  <section>
+    <h2>Open positions</h2>
+    <div class="table-wrap">
+      <table id="openPositionsTable">
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Qualification</th><th>Entry</th><th>Current</th>
+            <th>PnL%</th><th>Confidence</th><th>Target</th><th>Partial taken?</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="noOpenPositions" style="display:none;">No open positions right now.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Recent closed trades</h2>
+    <div class="table-wrap">
+      <table id="recentTradesTable">
+        <thead>
+          <tr><th>Closed</th><th>Symbol</th><th>Exit reason</th><th>PnL (SOL)</th><th>PnL%</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="noRecentTrades" style="display:none;">No closed trades yet.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Reputation & tuning</h2>
+    <div class="cards" id="repCards"></div>
+  </section>
+
+<script>
+function fmtSigned(n, decimals) {
+  decimals = decimals === undefined ? 4 : decimals;
+  var s = n.toFixed(decimals);
+  return (n >= 0 ? "+" : "") + s;
+}
+
+function pnlClass(n) {
+  return n >= 0 ? "pos" : "neg";
+}
+
+function timeAgo(ms) {
+  var diff = Date.now() - ms;
+  var mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  var hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + "h ago";
+  return Math.floor(hours / 24) + "d ago";
+}
+
+function card(label, value, cls) {
+  return '<div class="card"><div class="label">' + label + '</div>' +
+    '<div class="value ' + (cls || "") + '">' + value + "</div></div>";
+}
+
+function renderSummaryCards(data) {
+  var status = data.status;
+  var windows = data.windows;
+  var cards = "";
+
+  if (status && status.paperBalanceSol !== null && status.paperBalanceSol !== undefined) {
+    cards += card("Paper balance", status.paperBalanceSol.toFixed(4) + " SOL");
+  }
+  cards += card("Open positions", status ? status.openPositions.length : "0");
+  cards += card("24h PnL", fmtSigned(windows.last24h.totalPnlSol) + " SOL", pnlClass(windows.last24h.totalPnlSol));
+  cards += card("7d PnL", fmtSigned(windows.last7d.totalPnlSol) + " SOL", pnlClass(windows.last7d.totalPnlSol));
+  cards += card("All-time PnL", fmtSigned(windows.allTime.totalPnlSol) + " SOL", pnlClass(windows.allTime.totalPnlSol));
+  cards += card("All-time win rate", windows.allTime.trades > 0 ? windows.allTime.winRatePct.toFixed(1) + "%" : "-");
+
+  document.getElementById("summaryCards").innerHTML = cards;
+}
+
+function renderOpenPositions(status) {
+  var tbody = document.querySelector("#openPositionsTable tbody");
+  var positions = (status && status.openPositions) || [];
+  document.getElementById("noOpenPositions").style.display = positions.length === 0 ? "block" : "none";
+  document.getElementById("openPositionsTable").style.display = positions.length === 0 ? "none" : "table";
+
+  tbody.innerHTML = positions.map(function (p) {
+    var pnlPct = ((p.currentPricePerToken - p.entryPricePerToken) / p.entryPricePerToken) * 100;
+    return "<tr>" +
+      "<td>" + p.symbol + "</td>" +
+      "<td>" + p.qualificationPath + "</td>" +
+      "<td class=\"mono\">" + p.entryPricePerToken.toExponential(3) + "</td>" +
+      "<td class=\"mono\">" + p.currentPricePerToken.toExponential(3) + "</td>" +
+      "<td class=\"mono " + pnlClass(pnlPct) + "\">" + fmtSigned(pnlPct, 1) + "%</td>" +
+      "<td>" + (p.confidenceScore * 100).toFixed(0) + "%</td>" +
+      "<td>+" + p.targetTakeProfitPct.toFixed(0) + "%</td>" +
+      "<td>" + (p.hasTakenPartialProfit ? "yes" : "no") + "</td>" +
+      "</tr>";
+  }).join("");
+}
+
+function renderRecentTrades(trades) {
+  var tbody = document.querySelector("#recentTradesTable tbody");
+  document.getElementById("noRecentTrades").style.display = trades.length === 0 ? "block" : "none";
+  document.getElementById("recentTradesTable").style.display = trades.length === 0 ? "none" : "table";
+
+  tbody.innerHTML = trades.map(function (t) {
+    return "<tr>" +
+      "<td>" + timeAgo(t.closedAt) + "</td>" +
+      "<td>" + t.symbol + "</td>" +
+      "<td>" + t.exitReason + "</td>" +
+      "<td class=\"mono " + pnlClass(t.pnlSol) + "\">" + fmtSigned(t.pnlSol) + "</td>" +
+      "<td class=\"mono " + pnlClass(t.pnlPct) + "\">" + fmtSigned(t.pnlPct, 1) + "%</td>" +
+      "</tr>";
+  }).join("");
+}
+
+function renderRepCards(status) {
+  var cards = "";
+  if (status) {
+    cards += card("Known devs", status.devSummary.totalDevs +
+      " (" + status.devSummary.trusted + " trusted, " + status.devSummary.blacklisted + " blacklisted)");
+    cards += card("Known snipers", status.sniperSummary.totalSnipers +
+      " (" + status.sniperSummary.trusted + " trusted)");
+    cards += card("Tuned min volume", status.tunedParams.minVolumeSol.toFixed(3) + " SOL");
+    cards += card("Tuned max dev hold", status.tunedParams.maxDevHoldPct.toFixed(1) + "%");
+  } else {
+    cards = '<div class="empty">Bot has not written a status snapshot yet — is it running?</div>';
+  }
+  document.getElementById("repCards").innerHTML = cards;
+}
+
+function refresh() {
+  fetch("/api/status")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      var badge = document.getElementById("modeBadge");
+      if (data.status) {
+        badge.textContent = data.status.dryRun ? "DRY RUN" : "LIVE";
+        badge.className = "badge " + (data.status.dryRun ? "dry" : "live");
+        document.getElementById("lastUpdated").textContent =
+          "Bot last reported " + timeAgo(data.status.updatedAt);
+      } else {
+        badge.textContent = "";
+        document.getElementById("lastUpdated").textContent =
+          "No status snapshot yet — start the bot to populate this.";
+      }
+      renderSummaryCards(data);
+      renderOpenPositions(data.status);
+      renderRecentTrades(data.recentTrades);
+      renderRepCards(data.status);
+    })
+    .catch(function (err) {
+      document.getElementById("lastUpdated").textContent = "Failed to load status: " + err;
+    });
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

@@ -142,6 +142,21 @@ export interface SniperRecord {
   lastSeenAt: number;
 }
 
+/**
+ * Periodic snapshot the main bot process writes to disk (config.statusFile)
+ * purely for the dashboard server (a separate process) to read. Carries no
+ * trading behavior of its own.
+ */
+export interface StatusSnapshot {
+  updatedAt: number;
+  dryRun: boolean;
+  paperBalanceSol: number | null;
+  openPositions: Position[];
+  devSummary: { totalDevs: number; trusted: number; blacklisted: number };
+  sniperSummary: { totalSnipers: number; trusted: number };
+  tunedParams: { minVolumeSol: number; maxDevHoldPct: number };
+}
+
 export interface ClosedPosition extends Position {
   closedAt: number;
   exitReason: ExitReason;

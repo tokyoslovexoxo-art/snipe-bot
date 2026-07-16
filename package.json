@@ -9,7 +9,8 @@
     "dev": "ts-node src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "report": "ts-node src/report.ts"
+    "report": "ts-node src/report.ts",
+    "dashboard": "ts-node src/dashboardServer.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.3",

@@ -127,6 +127,20 @@ export const config = {
   // NOT a live price feed — SOL is volatile, keep this reasonably current
   // yourself. Set near $76 as of when this was configured (Jul 2026).
   solUsdPrice: num("SOL_USD_PRICE", 76),
+
+  // ==== Status snapshot (for the dashboard) ====
+  // The main bot process writes a small snapshot of its live state here
+  // periodically; the dashboard server (a separate process) reads it. Not
+  // used for anything trading-related.
+  statusFile: process.env.STATUS_FILE ?? "data/status.json",
+
+  // ==== Web dashboard ====
+  // A read-only status page, protected by HTTP Basic Auth. Runs as its own
+  // process (`npm run dashboard`), separate from the bot. Set real
+  // credentials in your own .env — do not commit them.
+  dashboardPort: num("DASHBOARD_PORT", 3000),
+  dashboardUsername: process.env.DASHBOARD_USERNAME ?? "",
+  dashboardPassword: process.env.DASHBOARD_PASSWORD ?? "",
 };
 
 export function assertLiveConfig(): void {

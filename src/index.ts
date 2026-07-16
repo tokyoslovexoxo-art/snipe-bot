@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { config, assertLiveConfig } from "./config";
 import { logger } from "./logger";
 import { PumpPortalSocket } from "./pumpportal/socket";
@@ -9,6 +11,7 @@ import { DevReputationStore } from "./devReputation";
 import { AdaptiveTuner } from "./adaptiveTuner";
 import { SniperReputationStore } from "./sniperReputation";
 import { SniperTracker } from "./sniperTracker";
+import { StatusSnapshot } from "./types";
 
 function printBanner(): void {
   const lines = [
@@ -76,6 +79,22 @@ async function main(): Promise<void> {
         `Known snipers: ${sniperSummary.totalSnipers} (${sniperSummary.trusted} trusted) | ` +
         `Tuned filters: minVolume=${tuned.minVolumeSol.toFixed(3)} SOL, maxDevHold=${tuned.maxDevHoldPct.toFixed(1)}%`
     );
+
+    const snapshot: StatusSnapshot = {
+      updatedAt: Date.now(),
+      dryRun: config.dryRun,
+      paperBalanceSol: config.dryRun ? paperWallet!.solBalance : null,
+      openPositions: positionManager.getOpenPositions(),
+      devSummary,
+      sniperSummary,
+      tunedParams: tuned,
+    };
+    try {
+      fs.mkdirSync(path.dirname(config.statusFile), { recursive: true });
+      fs.writeFileSync(config.statusFile, JSON.stringify(snapshot, null, 2));
+    } catch (err) {
+      logger.warn(`Failed to write status snapshot: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }, 30_000);
   reportInterval.unref();
 
