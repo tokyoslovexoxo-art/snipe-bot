@@ -76,6 +76,12 @@ export class SniperReputationStore {
     );
   }
 
+  /** Read-only snapshot of a wallet's current record, if any is known yet. */
+  getRecord(wallet: string): SniperRecord | undefined {
+    const rec = this.snipers.get(wallet);
+    return rec ? { ...rec } : undefined;
+  }
+
   isTrusted(wallet: string): boolean {
     if (!config.sniperTrackingEnabled) return false;
 

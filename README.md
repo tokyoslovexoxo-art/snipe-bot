@@ -144,6 +144,32 @@ modes. It is **not** accurate for **execution realism**:
 Treat dry-run PnL as an optimistic ceiling on live performance, not a
 forecast.
 
+## Trade log / future training data
+
+Every closed trade appended to `trades.jsonl` includes a full
+`DecisionContext` snapshot, not just the outcome — captured at the moment
+the token qualified for a buy:
+
+- `qualificationPath` — `"volume"` / `"dev_trusted"` / `"sniper_trusted"`
+- `devHoldPctAtBuy`, `devTrustLevelAtBuy`, `devWinsAtBuy`, `devLossesAtBuy`,
+  `devTotalPnlSolAtBuy` — the creator's track record as of that trade
+- `triggeringSniperWallet`, `sniperWinsAtBuy`, `sniperLossesAtBuy` — set if
+  a sniper signal is what triggered the buy
+- `volumeAtQualificationSol`, `timeToQualifyMs` — how much volume had
+  accumulated and how long it took
+- `tunedMinVolumeSolAtBuy`, `tunedMaxDevHoldPctAtBuy` — the live tuned
+  filter values in effect at that moment (these drift over time, so the
+  current `data/tuning.json` alone can't tell you what they were on any
+  earlier trade)
+
+This is deliberate: `data/devs.json`, `data/tuning.json`, and
+`data/snipers.json` only hold *current* aggregate state, so without this the
+trade log would be reduced to bare PnL numbers with no situational context.
+With it, every row in `trades.jsonl` is a self-contained (features, outcome)
+example — which is what you'd actually need if you ever fit a real model on
+accumulated history later (see the dev/adaptive-tuning section above for why
+that's a "much later, after real data has piled up" thing, not a now thing).
+
 ## Risks (read this)
 
 - **Brand-new pump.fun tokens are extremely thin-liquidity and adversarial.**

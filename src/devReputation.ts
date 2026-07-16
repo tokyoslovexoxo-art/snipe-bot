@@ -84,6 +84,12 @@ export class DevReputationStore {
     );
   }
 
+  /** Read-only snapshot of a wallet's current record, if any is known yet. */
+  getRecord(wallet: string): DevRecord | undefined {
+    const rec = this.devs.get(wallet);
+    return rec ? { ...rec } : undefined;
+  }
+
   getTrustLevel(wallet: string): TrustLevel {
     if (!config.devTrackingEnabled) return "neutral";
 

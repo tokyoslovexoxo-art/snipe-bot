@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   const tuner = new AdaptiveTuner();
   const sniperReputation = new SniperReputationStore();
   const sniperTracker = new SniperTracker(socket, sniperReputation);
-  const discovery = new DiscoveryService(socket, devReputation, tuner, sniperTracker);
+  const discovery = new DiscoveryService(socket, devReputation, tuner, sniperTracker, sniperReputation);
   const positionManager = new PositionManager(socket, trader, devReputation, tuner, sniperTracker);
 
   discovery.on("qualified", (signal: QualifiedSignal) => {

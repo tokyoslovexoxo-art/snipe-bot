@@ -46,7 +46,37 @@ export interface TradeResult {
   error?: string;
 }
 
-export interface Position {
+export type TrustLevel = "blacklisted" | "trusted" | "neutral";
+
+// Which mechanism qualified this token for a buy — useful on its own as a
+// training feature later (fast-tracked buys are a different risk profile
+// than volume-confirmed ones).
+export type QualificationPath = "volume" | "dev_trusted" | "sniper_trusted";
+
+/**
+ * Snapshot of everything that informed a buy decision, captured at
+ * qualification time. Carried through onto Position/ClosedPosition so the
+ * full trade log is self-contained — no need to cross-reference devs.json /
+ * snipers.json / tuning.json (which only hold current state, not history)
+ * to reconstruct "what did the bot know when it bought this."
+ */
+export interface DecisionContext {
+  qualificationPath: QualificationPath;
+  devHoldPctAtBuy: number;
+  devTrustLevelAtBuy: TrustLevel;
+  devWinsAtBuy: number;
+  devLossesAtBuy: number;
+  devTotalPnlSolAtBuy: number;
+  triggeringSniperWallet: string | null;
+  sniperWinsAtBuy: number | null;
+  sniperLossesAtBuy: number | null;
+  volumeAtQualificationSol: number;
+  timeToQualifyMs: number;
+  tunedMinVolumeSolAtBuy: number;
+  tunedMaxDevHoldPctAtBuy: number;
+}
+
+export interface Position extends DecisionContext {
   mint: string;
   symbol: string;
   name: string;
@@ -68,8 +98,6 @@ export interface DevRecord {
   totalPnlSol: number;
   lastSeenAt: number;
 }
-
-export type TrustLevel = "blacklisted" | "trusted" | "neutral";
 
 export interface SniperRecord {
   wallet: string;

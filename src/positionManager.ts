@@ -74,6 +74,19 @@ export class PositionManager {
       openedAt: now,
       currentPricePerToken: result.pricePerToken,
       lastUpdatedAt: now,
+      qualificationPath: signal.qualificationPath,
+      devHoldPctAtBuy: signal.devHoldPctAtBuy,
+      devTrustLevelAtBuy: signal.devTrustLevelAtBuy,
+      devWinsAtBuy: signal.devWinsAtBuy,
+      devLossesAtBuy: signal.devLossesAtBuy,
+      devTotalPnlSolAtBuy: signal.devTotalPnlSolAtBuy,
+      triggeringSniperWallet: signal.triggeringSniperWallet,
+      sniperWinsAtBuy: signal.sniperWinsAtBuy,
+      sniperLossesAtBuy: signal.sniperLossesAtBuy,
+      volumeAtQualificationSol: signal.volumeAtQualificationSol,
+      timeToQualifyMs: signal.timeToQualifyMs,
+      tunedMinVolumeSolAtBuy: signal.tunedMinVolumeSolAtBuy,
+      tunedMaxDevHoldPctAtBuy: signal.tunedMaxDevHoldPctAtBuy,
     };
     this.positions.set(signal.mint, position);
     logger.info(

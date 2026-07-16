@@ -4,20 +4,22 @@ import { logger } from "./logger";
 import { PumpPortalSocket } from "./pumpportal/socket";
 import { DevReputationStore } from "./devReputation";
 import { AdaptiveTuner } from "./adaptiveTuner";
+import { SniperReputationStore } from "./sniperReputation";
 import { SniperTracker, TrustedSniperBuySignal } from "./sniperTracker";
-import { NewTokenEvent, TokenTradeEvent } from "./types";
+import { DecisionContext, NewTokenEvent, QualificationPath, TokenTradeEvent } from "./types";
 
 interface TrackedToken {
   mint: string;
   symbol: string;
   name: string;
   creatorWallet: string;
+  devHoldPct: number;
   createdAt: number;
   cumulativeVolumeSol: number;
   currentPricePerToken: number;
 }
 
-export interface QualifiedSignal {
+export interface QualifiedSignal extends DecisionContext {
   mint: string;
   symbol: string;
   name: string;
@@ -43,6 +45,10 @@ function priceFromCurve(vSol: number, vTokens: number): number {
  * DevReputationStore. Separately, if a proven-profitable OTHER wallet
  * (a "sniper", not the creator) buys into a token we're still watching, that
  * also fast-tracks a buy — see SniperTracker.
+ *
+ * Every qualification path captures a full DecisionContext snapshot — this
+ * is what makes the eventual trade log self-contained and reusable as
+ * training data later, instead of just a bare PnL number.
  */
 export class DiscoveryService extends EventEmitter {
   private tracked = new Map<string, TrackedToken>();
@@ -52,7 +58,8 @@ export class DiscoveryService extends EventEmitter {
     private socket: PumpPortalSocket,
     private devReputation: DevReputationStore,
     private tuner: AdaptiveTuner,
-    private sniperTracker: SniperTracker
+    private sniperTracker: SniperTracker,
+    private sniperReputation: SniperReputationStore
   ) {
     super();
   }
@@ -69,6 +76,38 @@ export class DiscoveryService extends EventEmitter {
 
   stop(): void {
     if (this.pruneInterval) clearInterval(this.pruneInterval);
+  }
+
+  private buildDecisionContext(
+    creatorWallet: string,
+    devHoldPct: number,
+    qualificationPath: QualificationPath,
+    volumeAtQualificationSol: number,
+    timeToQualifyMs: number,
+    triggeringSniperWallet: string | null
+  ): DecisionContext {
+    const devTrustLevel = creatorWallet ? this.devReputation.getTrustLevel(creatorWallet) : "neutral";
+    const devRecord = creatorWallet ? this.devReputation.getRecord(creatorWallet) : undefined;
+    const sniperRecord = triggeringSniperWallet
+      ? this.sniperReputation.getRecord(triggeringSniperWallet)
+      : undefined;
+    const tuned = this.tuner.get();
+
+    return {
+      qualificationPath,
+      devHoldPctAtBuy: devHoldPct,
+      devTrustLevelAtBuy: devTrustLevel,
+      devWinsAtBuy: devRecord?.wins ?? 0,
+      devLossesAtBuy: devRecord?.losses ?? 0,
+      devTotalPnlSolAtBuy: devRecord?.totalPnlSol ?? 0,
+      triggeringSniperWallet,
+      sniperWinsAtBuy: triggeringSniperWallet ? sniperRecord?.wins ?? 0 : null,
+      sniperLossesAtBuy: triggeringSniperWallet ? sniperRecord?.losses ?? 0 : null,
+      volumeAtQualificationSol,
+      timeToQualifyMs,
+      tunedMinVolumeSolAtBuy: tuned.minVolumeSol,
+      tunedMaxDevHoldPctAtBuy: tuned.maxDevHoldPct,
+    };
   }
 
   private handleNewToken(evt: NewTokenEvent): void {
@@ -102,6 +141,7 @@ export class DiscoveryService extends EventEmitter {
     const currentPrice = priceFromCurve(evt.vSolInBondingCurve, evt.vTokensInBondingCurve);
     const symbol = evt.symbol ?? "?";
     const name = evt.name ?? "?";
+    const initialVolume = evt.solAmount ?? 0;
 
     if (trustLevel === "trusted") {
       logger.info(
@@ -110,22 +150,31 @@ export class DiscoveryService extends EventEmitter {
       );
       this.socket.watchMint(evt.mint);
       this.sniperTracker.startTracking(evt.mint, creatorWallet);
+      const context = this.buildDecisionContext(
+        creatorWallet,
+        devHoldPct,
+        "dev_trusted",
+        initialVolume,
+        0,
+        null
+      );
       this.emit("qualified", {
         mint: evt.mint,
         symbol,
         name,
         creatorWallet,
         currentPricePerToken: currentPrice,
+        ...context,
       } as QualifiedSignal);
       return;
     }
 
-    const initialVolume = evt.solAmount ?? 0;
     const entry: TrackedToken = {
       mint: evt.mint,
       symbol,
       name,
       creatorWallet,
+      devHoldPct,
       createdAt: Date.now(),
       cumulativeVolumeSol: initialVolume,
       currentPricePerToken: currentPrice,
@@ -162,12 +211,21 @@ export class DiscoveryService extends EventEmitter {
       `FAST-TRACK: ${entry.symbol} (${signal.mint.slice(0, 8)}...) — trusted sniper ` +
         `${signal.wallet.slice(0, 8)}... just bought in.`
     );
+    const context = this.buildDecisionContext(
+      entry.creatorWallet,
+      entry.devHoldPct,
+      "sniper_trusted",
+      entry.cumulativeVolumeSol,
+      Date.now() - entry.createdAt,
+      signal.wallet
+    );
     this.emit("qualified", {
       mint: entry.mint,
       symbol: entry.symbol,
       name: entry.name,
       creatorWallet: entry.creatorWallet,
       currentPricePerToken: entry.currentPricePerToken,
+      ...context,
     } as QualifiedSignal);
   }
 
@@ -180,12 +238,21 @@ export class DiscoveryService extends EventEmitter {
       `QUALIFIED: ${entry.symbol} (${entry.mint.slice(0, 8)}...) crossed ${minVolumeSol.toFixed(3)} SOL ` +
         `volume (${entry.cumulativeVolumeSol.toFixed(3)} SOL) in ${Date.now() - entry.createdAt}ms`
     );
+    const context = this.buildDecisionContext(
+      entry.creatorWallet,
+      entry.devHoldPct,
+      "volume",
+      entry.cumulativeVolumeSol,
+      Date.now() - entry.createdAt,
+      null
+    );
     const signal: QualifiedSignal = {
       mint: entry.mint,
       symbol: entry.symbol,
       name: entry.name,
       creatorWallet: entry.creatorWallet,
       currentPricePerToken: entry.currentPricePerToken,
+      ...context,
     };
     this.emit("qualified", signal);
   }
