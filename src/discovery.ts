@@ -40,25 +40,25 @@ function priceFromCurve(vSol: number, vTokens: number): number {
 
 /**
  * Watches new pump.fun launches and emits "qualified" once a token clears
- * its entry gate. In COPY_TRADE_ONLY_MODE (the default), the ONLY gate is a
- * PRIORITY_SNIPER_WALLETS wallet buying in — market_cap/volume/dev_trusted
- * qualification and earned-trust (non-priority) sniper fast-tracking are
- * all disabled. With copy-trade-only mode off, the normal ENTRY_FILTER_MODE
- * (market-cap range, volume threshold, or both) applies instead. Tokens
- * that never clear the bar in time are dropped (and unwatched) to keep the
- * subscription set bounded.
+ * its entry gate.
  *
- * Creator wallets with a known-bad track record, or a too-high dev-hold%,
- * are skipped by the NORMAL qualification paths — but every token is still
- * tracked regardless, specifically so a manually-seeded
- * PRIORITY_SNIPER_WALLETS buy can still override that skip (see
- * handleTrustedSniperBuy) — you asked for the bot to copy that wallet's
- * buys, full stop, so its judgment is allowed to override the anti-rug
- * filter where an ordinary earned-trust sniper's can't.
+ * In COPY_TRADE_ONLY_MODE (the default), this class does NOT scan new
+ * launches at all — see start(). The only thing that qualifies a buy is a
+ * PRIORITY_SNIPER_WALLETS wallet buying, detected directly off that
+ * wallet's own account-trade stream (SniperTracker.handlePriorityWalletTrade)
+ * regardless of whether we'd been separately tracking that mint. This is
+ * deliberately simpler than the old approach of watching every new token
+ * from creation, which could silently miss a wallet's buy on a token we'd
+ * stopped tracking (or never started, e.g. across a bot restart).
+ * market_cap/volume/dev_trusted qualification and earned-trust
+ * (non-priority) sniper fast-tracking are all disabled in this mode.
  *
- * Creator wallets with a known-good track record are fast-tracked (bought
- * immediately at launch instead of waiting for volume/market-cap
- * confirmation) — see DevReputationStore.
+ * With COPY_TRADE_ONLY_MODE=false, the class works as before: every new
+ * launch is tracked, ENTRY_FILTER_MODE (market-cap range, volume threshold,
+ * or both) decides normal qualification, creator wallets with a known-bad
+ * track record or too-high dev-hold% are skipped (except a
+ * PRIORITY_SNIPER_WALLETS buy still overrides that), and known-good
+ * creators are fast-tracked — see DevReputationStore.
  *
  * Every qualification path captures a full DecisionContext snapshot — this
  * is what makes the eventual trade log self-contained and reusable as
@@ -79,11 +79,21 @@ export class DiscoveryService extends EventEmitter {
   }
 
   start(): void {
-    this.socket.on("newToken", (evt: NewTokenEvent) => this.handleNewToken(evt));
-    this.socket.on("trade", (evt: TokenTradeEvent) => this.handleTrade(evt));
     this.sniperTracker.on("trustedBuy", (signal: TrustedSniperBuySignal) =>
       this.handleTrustedSniperBuy(signal)
     );
+
+    // Copy-trade-only mode doesn't scan new launches at all — it has no use
+    // for market_cap/volume/dev_trust qualification, and NOT subscribing
+    // avoids tracking thousands of irrelevant tokens per hour just to watch
+    // ~all of them get pruned unused. Priority-wallet buys arrive directly
+    // via SniperTracker's account-trade subscription instead (see
+    // handleTrustedSniperBuy below), regardless of whether we've seen this
+    // mint's creation.
+    if (config.copyTradeOnlyMode) return;
+
+    this.socket.on("newToken", (evt: NewTokenEvent) => this.handleNewToken(evt));
+    this.socket.on("trade", (evt: TokenTradeEvent) => this.handleTrade(evt));
     this.socket.subscribeNewTokens();
     this.pruneInterval = setInterval(() => this.pruneStale(), 5_000);
   }
@@ -227,15 +237,38 @@ export class DiscoveryService extends EventEmitter {
   }
 
   private handleTrustedSniperBuy(signal: TrustedSniperBuySignal): void {
+    if (config.copyTradeOnlyMode) {
+      // No TrackedToken bookkeeping exists in this mode (see start()) — the
+      // signal itself carries everything needed to buy immediately. Symbol/
+      // name/creator/dev-hold aren't knowable without having watched this
+      // mint's creation, which this mode deliberately skips; logs fall back
+      // to the mint's short prefix instead of a ticker symbol.
+      const symbol = signal.mint.slice(0, 8);
+      logger.info(`COPY-TRADE: ${symbol}... — copying priority wallet ${signal.wallet.slice(0, 8)}...'s buy.`);
+      const context = this.buildDecisionContext(
+        "",
+        0,
+        "sniper_trusted",
+        0,
+        0,
+        signal.wallet,
+        signal.marketCapSol
+      );
+      this.emit("qualified", {
+        mint: signal.mint,
+        symbol,
+        name: symbol,
+        creatorWallet: "",
+        currentPricePerToken: priceFromCurve(signal.vSolInBondingCurve, signal.vTokensInBondingCurve),
+        ...context,
+      } as QualifiedSignal);
+      return;
+    }
+
     const entry = this.tracked.get(signal.mint);
     if (!entry) return; // already qualified/pruned, or dev-fast-tracked already
 
     const isPriorityWallet = config.prioritySniperWallets.includes(signal.wallet);
-    if (config.copyTradeOnlyMode && !isPriorityWallet) {
-      // Copy-trade-only mode: ONLY a manually-seeded priority wallet's buy
-      // qualifies a token — an ordinary earned-trust sniper's buy is ignored.
-      return;
-    }
     if (entry.blockedByAntiRugFilter && !isPriorityWallet) {
       // Only a manually-seeded priority wallet's judgment overrides the
       // anti-rug filter; an ordinary earned-trust sniper's doesn't.

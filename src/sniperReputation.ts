@@ -95,26 +95,37 @@ export class SniperReputationStore {
    * into, as running averages — the "why does this wallet pick what it
    * picks" analysis. Purely descriptive of what's been observed; see
    * AdaptiveTuner for how this can feed back into the bot's own entry gate.
+   *
+   * devHoldPct/timeSinceLaunchMs are optional: in COPY_TRADE_ONLY_MODE we no
+   * longer watch every token from creation (see SniperTracker), so those two
+   * aren't knowable — omitting them just skips updating those two specific
+   * averages rather than polluting them with fabricated zeros. marketCapUsd
+   * is always measured directly off the trade itself, so it's always real.
    */
   recordBuyContext(
     wallet: string,
     marketCapUsd: number,
-    devHoldPct: number,
-    timeSinceLaunchMs: number
+    devHoldPct?: number,
+    timeSinceLaunchMs?: number
   ): void {
     const rec = this.getOrCreate(wallet);
     const n = rec.buyContextSamples + 1;
     rec.avgMarketCapUsdAtBuy += (marketCapUsd - rec.avgMarketCapUsdAtBuy) / n;
-    rec.avgDevHoldPctAtBuy += (devHoldPct - rec.avgDevHoldPctAtBuy) / n;
-    rec.avgTimeSinceLaunchMsAtBuy += (timeSinceLaunchMs - rec.avgTimeSinceLaunchMsAtBuy) / n;
+    if (devHoldPct !== undefined) {
+      rec.avgDevHoldPctAtBuy += (devHoldPct - rec.avgDevHoldPctAtBuy) / n;
+    }
+    if (timeSinceLaunchMs !== undefined) {
+      rec.avgTimeSinceLaunchMsAtBuy += (timeSinceLaunchMs - rec.avgTimeSinceLaunchMsAtBuy) / n;
+    }
     rec.buyContextSamples = n;
     rec.lastSeenAt = Date.now();
     this.save();
     logger.info(
-      `Sniper ${wallet.slice(0, 8)}... buy-context sample #${n}: mcap=$${marketCapUsd.toFixed(0)}, ` +
-        `devHold=${devHoldPct.toFixed(1)}%, ${timeSinceLaunchMs}ms after launch. Running averages: ` +
-        `mcap=$${rec.avgMarketCapUsdAtBuy.toFixed(0)}, devHold=${rec.avgDevHoldPctAtBuy.toFixed(1)}%, ` +
-        `${rec.avgTimeSinceLaunchMsAtBuy.toFixed(0)}ms.`
+      `Sniper ${wallet.slice(0, 8)}... buy-context sample #${n}: mcap=$${marketCapUsd.toFixed(0)}` +
+        (devHoldPct !== undefined ? `, devHold=${devHoldPct.toFixed(1)}%` : "") +
+        (timeSinceLaunchMs !== undefined ? `, ${timeSinceLaunchMs}ms after launch` : "") +
+        `. Running averages: mcap=$${rec.avgMarketCapUsdAtBuy.toFixed(0)}, ` +
+        `devHold=${rec.avgDevHoldPctAtBuy.toFixed(1)}%, ${rec.avgTimeSinceLaunchMsAtBuy.toFixed(0)}ms.`
     );
   }
 

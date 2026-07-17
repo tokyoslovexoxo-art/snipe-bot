@@ -19,6 +19,7 @@ export class PumpPortalSocket extends EventEmitter {
   private closedByUser = false;
   private watchedMints = new Set<string>();
   private subscribedToNewTokens = false;
+  private subscribedAccounts = new Set<string>();
 
   connect(): void {
     this.closedByUser = false;
@@ -37,6 +38,9 @@ export class PumpPortalSocket extends EventEmitter {
       }
       if (this.watchedMints.size > 0) {
         this.send({ method: "subscribeTokenTrade", keys: [...this.watchedMints] });
+      }
+      if (this.subscribedAccounts.size > 0) {
+        this.send({ method: "subscribeAccountTrade", keys: [...this.subscribedAccounts] });
       }
     });
 
@@ -93,6 +97,21 @@ export class PumpPortalSocket extends EventEmitter {
   subscribeNewTokens(): void {
     this.subscribedToNewTokens = true;
     this.send({ method: "subscribeNewToken" });
+  }
+
+  /**
+   * Subscribes to every buy/sell made by these specific wallets, across ANY
+   * mint — not just ones we're separately watching via watchMint/
+   * subscribeTokenTrade. This is what makes copy-trade-only mode work
+   * without scanning every new launch: we don't need to have seen a token
+   * created or be already watching it to notice the tracked wallet trading
+   * it, since this subscription is keyed by wallet, not by mint.
+   */
+  subscribeAccountTrades(wallets: string[]): void {
+    const newOnes = wallets.filter((w) => !this.subscribedAccounts.has(w));
+    if (newOnes.length === 0) return;
+    for (const w of newOnes) this.subscribedAccounts.add(w);
+    this.send({ method: "subscribeAccountTrade", keys: newOnes });
   }
 
   watchMint(mint: string): void {

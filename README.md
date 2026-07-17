@@ -14,11 +14,17 @@ stop-loss, or hold-time safety net.
 ## How it works
 
 - **Discovery**: connects to [PumpPortal](https://pumpportal.fun)'s public
-  websocket (`wss://pumpportal.fun/api/data`) and subscribes to new pump.fun
-  token creation events plus per-token trade events.
-- **Filter**: with `COPY_TRADE_ONLY_MODE=true` (the default), the ONLY thing
-  that qualifies a buy is a `PRIORITY_SNIPER_WALLETS` wallet buying that
-  token — `ENTRY_FILTER_MODE`, dev-trust fast-tracking, and earned-trust
+  websocket (`wss://pumpportal.fun/api/data`). With `COPY_TRADE_ONLY_MODE=true`
+  (the default), it does NOT subscribe to new-token creation events at all —
+  instead it subscribes directly to each `PRIORITY_SNIPER_WALLETS` wallet's
+  own trade activity (`subscribeAccountTrade`), which reports that wallet's
+  buys/sells on ANY token, regardless of whether we'd separately been
+  watching it. With `COPY_TRADE_ONLY_MODE=false`, it instead subscribes to
+  new pump.fun token creation events plus per-token trade events, tracking
+  every launch to judge for itself.
+- **Filter**: with `COPY_TRADE_ONLY_MODE=true`, the ONLY thing that
+  qualifies a buy is a `PRIORITY_SNIPER_WALLETS` wallet buying that token —
+  `ENTRY_FILTER_MODE`, dev-trust fast-tracking, and earned-trust
   (non-priority) sniper fast-tracking are all disabled, and a priority
   wallet's buy overrides the anti-rug filter (`MAX_DEV_HOLD_PCT`/dev
   blacklist) too. See "Copy-trade-only mode" below.
@@ -73,6 +79,21 @@ specific wallet's fast in-and-out style on high-volume launches, not to
 have the bot make its own judgment calls alongside it. Set
 `COPY_TRADE_ONLY_MODE=false` to go back to the bot judging launches itself.
 
+**How a priority wallet's buy is actually detected**: this mode subscribes
+directly to each tracked wallet's own trade activity
+(`subscribeAccountTrade`), not to new-token creation. That means the bot
+doesn't need to have already been "watching" a token — it notices the
+wallet's buy the moment it happens, on any token, whether that token
+launched a second ago or an hour ago. (An earlier version of this mode
+still scanned every new launch and only tracked a wallet's buy if it
+happened to fall within a short post-creation window; that silently missed
+buys outside that window, including anything that happened across a bot
+restart, which wiped the in-memory tracking state. This is fixed.) One
+side effect: without watching creation events, the bot doesn't know a
+token's ticker symbol or name, so logs/dashboard show the mint's address
+prefix instead of a symbol for copy-traded positions — cosmetic only, does
+not affect trading behavior.
+
 **How the bot decides *when* to sell, beyond copying the wallet's own exit:**
 
 Once a priority wallet has enough observed buy+sell pairs
@@ -85,10 +106,13 @@ targets straight from that wallet's own history (`data/snipers.json`):
   confidence score. If they've historically sold around 1.8x, the bot
   targets ~1.8x too, not a guess.
 - **Preemptive-exit deadline** = `PREEMPTIVE_EXIT_FRACTION_PCT` (default
-  85%) of that wallet's own average hold time (time from launch to their
-  sell). If they typically sell 20 seconds after launch, the bot targets
-  closing at ~17 seconds — aiming to be out slightly before they usually
-  are, based on their own pattern.
+  85%) of that wallet's own average hold time, measured from their own
+  first observed buy to their sell (not from token launch — we don't
+  reliably know launch time without watching creation events in this mode,
+  and their own hold duration is arguably the more directly useful number
+  anyway). If they typically hold ~20 seconds, the bot targets closing at
+  ~17 seconds on positions copying them — aiming to be out slightly before
+  they usually are, based on their own pattern.
 
 **Be clear about what this is not**: the bot cannot know a specific pending
 sell of theirs before it happens — PumpPortal's data feed only reports
@@ -263,13 +287,19 @@ accumulates real trade outcomes, persisted in `data/` across restarts:
     a fast-follow: a higher fee just helps our own trade confirm sooner once
     we've seen theirs (or once our own preemptive timer fires), on the
     assumption other bots/traders are racing to copy the same wallet.
-  - **Sampling limitation, worth understanding**: we only ever see the
-    slice of a sniper's activity that happens while we're actively watching
-    a given mint. A sniper who holds longer than our watch window, or exits
-    after we've stopped watching, is invisible to us for that trade — so
-    the sample is biased toward wallets that exit fast, and a wallet's
-    real-world track record (e.g. one you've seen quoted elsewhere) can
-    differ from what this bot itself observes and scores.
+  - **Sampling limitation — only applies with `COPY_TRADE_ONLY_MODE=false`**:
+    in that mode, we only ever see the slice of a sniper's activity that
+    happens while we're actively watching a given mint (from its creation
+    through however long we track it). A sniper who holds longer than our
+    watch window, or exits after we've stopped watching, is invisible to us
+    for that trade — so the sample is biased toward wallets that exit fast.
+    `COPY_TRADE_ONLY_MODE=true` (the default) doesn't have this limitation
+    for `PRIORITY_SNIPER_WALLETS` specifically: subscribing directly to
+    their account activity (see "Copy-trade-only mode" above) sees every
+    buy and sell they make regardless of when we started watching. Either
+    way, a wallet's real-world track record (e.g. one you've seen quoted
+    elsewhere) can differ from what this bot itself has observed and scored
+    so far, simply because it's judging off less history.
 
 **What this is not**: none of these three are a machine-learning model. All
 are plain counters and threshold checks — every decision is visible in the
