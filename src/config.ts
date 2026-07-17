@@ -109,6 +109,34 @@ export const config = {
   sniperRevokeMinSamples: num("SNIPER_REVOKE_MIN_SAMPLES", 3),
   sniperRevokeMaxWinRatePct: num("SNIPER_REVOKE_MAX_WIN_RATE_PCT", 40),
 
+  // ==== Copy-trade-only mode ====
+  // When true, the bot buys ONLY when a PRIORITY_SNIPER_WALLETS wallet buys
+  // — the market_cap/volume/dev_trusted entry paths, and earned-trust
+  // (non-priority) sniper fast-tracking, are all disabled. Pure copy-trading
+  // of the specific wallet(s) you've told the bot to trust, matching their
+  // own quick-in/quick-out style instead of the bot judging launches itself.
+  copyTradeOnlyMode: bool("COPY_TRADE_ONLY_MODE", true),
+  // How long (ms) a new token is kept watched, waiting for a priority
+  // wallet's buy, before giving up on it. Only used in copy-trade-only mode.
+  copyTradeWatchWindowMs: num("COPY_TRADE_WATCH_WINDOW_MS", 300_000),
+  // Once a priority wallet has enough observed buy+sell pairs
+  // (PREEMPTIVE_EXIT_MIN_SAMPLES), a position copying that wallet targets:
+  //  - a take-profit target equal to that wallet's own observed average
+  //    multiple (avg sell mcap / avg buy mcap), clamped to
+  //    [MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT] — instead of the generic
+  //    confidence-based target, since real data on THIS wallet's own typical
+  //    result is more specific than a general confidence score.
+  //  - closing at this fraction of that wallet's own average hold time
+  //    (time from launch to their sell) — e.g. 85 means "aim to be out
+  //    slightly before they typically are," based on real observed pattern.
+  // This is NOT knowledge of any pending sell of theirs (impossible — see
+  // README, PumpPortal only reports confirmed trades); it's a bet on their
+  // own historical behavior, which can be wrong on any single trade. The
+  // existing sniper_exit logic (follow them out the instant we see them
+  // actually sell) still applies as a reactive backstop alongside this.
+  preemptiveExitFractionPct: num("PREEMPTIVE_EXIT_FRACTION_PCT", 85),
+  preemptiveExitMinSamples: num("PREEMPTIVE_EXIT_MIN_SAMPLES", 3),
+
   // ==== Dynamic take-profit ====
   // Instead of a flat TAKE_PROFIT_PCT, place the target somewhere in
   // [MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT] based on a deterministic
@@ -119,7 +147,9 @@ export const config = {
   // than risking it round-trip back down. See README for the tradeoffs.
   dynamicTakeProfitEnabled: bool("DYNAMIC_TAKE_PROFIT_ENABLED", true),
   minTakeProfitPct: num("MIN_TAKE_PROFIT_PCT", 50),
-  maxTakeProfitPct: num("MAX_TAKE_PROFIT_PCT", 150),
+  // 50-100% matches "sell for 1.5x-2x" (tightened from an earlier 150% max
+  // now that copy-trade-only mode's quick-flip strategy is the default).
+  maxTakeProfitPct: num("MAX_TAKE_PROFIT_PCT", 100),
   // If a trusted sniper who was holding this token fully exits, follow them
   // out immediately regardless of current PnL (only applies while
   // dynamicTakeProfitEnabled).

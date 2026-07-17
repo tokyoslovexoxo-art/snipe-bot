@@ -1,10 +1,13 @@
 # snipe-bot
 
-A pump.fun new-launch snipe bot for Solana. Watches new pump.fun token
-launches in real time, buys into ones that qualify (by market cap, volume,
-or trust fast-track — see below), and exits automatically, always with a
-single full sell, on a confidence-scaled take-profit, stop-loss, or a
-max-hold-time safety net.
+A pump.fun new-launch snipe bot for Solana. By default (`COPY_TRADE_ONLY_MODE=true`)
+it buys ONLY the coins that specific wallet(s) you've told it to track buy —
+pure copy-trading, matching their own quick-in/quick-out style — and tries
+to exit at or before their own typical hold time and price target, learned
+from what they've actually done. With copy-trade-only mode off, it instead
+judges launches itself (by market cap, volume, or trust fast-track — see
+below). Either way, every exit is a single full sell, on a take-profit,
+stop-loss, or hold-time safety net.
 
 **Read the Risks section before using this with real money.**
 
@@ -13,21 +16,24 @@ max-hold-time safety net.
 - **Discovery**: connects to [PumpPortal](https://pumpportal.fun)'s public
   websocket (`wss://pumpportal.fun/api/data`) and subscribes to new pump.fun
   token creation events plus per-token trade events.
-- **Filter** (`ENTRY_FILTER_MODE`): a token qualifies for a buy when either
-  or both of these are true, depending on the mode:
-  - `market_cap` (the default): the token's market cap is within
+- **Filter**: with `COPY_TRADE_ONLY_MODE=true` (the default), the ONLY thing
+  that qualifies a buy is a `PRIORITY_SNIPER_WALLETS` wallet buying that
+  token — `ENTRY_FILTER_MODE`, dev-trust fast-tracking, and earned-trust
+  (non-priority) sniper fast-tracking are all disabled, and a priority
+  wallet's buy overrides the anti-rug filter (`MAX_DEV_HOLD_PCT`/dev
+  blacklist) too. See "Copy-trade-only mode" below.
+  With `COPY_TRADE_ONLY_MODE=false`, `ENTRY_FILTER_MODE` decides instead:
+  - `market_cap`: the token's market cap is within
     `[ENTRY_MIN_MARKET_CAP_USD, ENTRY_MAX_MARKET_CAP_USD]` — checked from the
     moment it's created, so this can fire within the first second, no
-    volume wait at all. This is the "get in the instant it launches, in a
-    specific market-cap window" behavior.
-  - `volume`: the original behavior — cumulative SOL bought on the bonding
-    curve since creation reaches `MIN_VOLUME_SOL` within `VOLUME_WINDOW_MS`.
+    volume wait at all.
+  - `volume`: cumulative SOL bought on the bonding curve since creation
+    reaches `MIN_VOLUME_SOL` within `VOLUME_WINDOW_MS`.
   - `both`: require both conditions at once.
-  Every new token is tracked and scored regardless of mode; tokens where the
-  creator's own initial buy is more than `MAX_DEV_HOLD_PCT` of the curve's
-  token supply are blocked from normal qualification as a basic rug filter
-  — **except** a `PRIORITY_SNIPER_WALLETS` buy, which overrides this filter
-  (see Sniper reputation below).
+  In this mode, tokens where the creator's own initial buy is more than
+  `MAX_DEV_HOLD_PCT` of the curve's token supply are blocked from normal
+  qualification as a basic rug filter — except a `PRIORITY_SNIPER_WALLETS`
+  buy, which still overrides it (see Sniper reputation below).
 - **Buy**: spends `BUY_AMOUNT_SOL` SOL per qualifying token, up to
   `MAX_CONCURRENT_POSITIONS` open positions at once.
 - **Sell**: closes the *entire* position, in one sell, when unrealized PnL
@@ -35,8 +41,10 @@ max-hold-time safety net.
   `MAX_TAKE_PROFIT_PCT`, or a flat `TAKE_PROFIT_PCT` if dynamic mode is off —
   see below), -`STOP_LOSS_PCT`%, the position has been held longer than
   `MAX_HOLD_TIME_MS` (absolute safety net), `UNSUPPORTED_MAX_HOLD_MS` with no
-  trusted sniper currently holding, or a trusted sniper backing the trade
-  fully exits. There is no partial/staged exit — every close is a full sell.
+  trusted sniper currently holding, a trusted sniper backing the trade fully
+  exits, or (copy-trade-only mode) a learned preemptive-exit deadline is
+  reached — see below. There is no partial/staged exit — every close is a
+  full sell.
 - **Execution**: live trades are built via PumpPortal's non-custodial
   "local transaction" API — PumpPortal returns an unsigned transaction, this
   bot signs it locally with your keypair and broadcasts it via your own RPC.
@@ -54,6 +62,57 @@ max-hold-time safety net.
   extra treatment: an anti-rug-filter override, buy-context analysis, and
   (live mode) a dedicated priority fee for the copy-trade buy.
 
+## Copy-trade-only mode
+
+`COPY_TRADE_ONLY_MODE=true` (the default) turns the bot into a pure
+copy-trader of the wallet(s) in `PRIORITY_SNIPER_WALLETS`: it buys ONLY
+when one of them buys, full stop. Every other qualification path
+(`market_cap`/`volume`/`dev_trusted`, and earned-trust fast-tracking for
+any *other* sniper wallet) is disabled — the point is to match this
+specific wallet's fast in-and-out style on high-volume launches, not to
+have the bot make its own judgment calls alongside it. Set
+`COPY_TRADE_ONLY_MODE=false` to go back to the bot judging launches itself.
+
+**How the bot decides *when* to sell, beyond copying the wallet's own exit:**
+
+Once a priority wallet has enough observed buy+sell pairs
+(`PREEMPTIVE_EXIT_MIN_SAMPLES`, default 3), the bot builds two learned
+targets straight from that wallet's own history (`data/snipers.json`):
+
+- **Take-profit target** = that wallet's own average realized multiple
+  (avg market cap at their sell ÷ avg market cap at their buy), clamped to
+  `[MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT]` — instead of the generic
+  confidence score. If they've historically sold around 1.8x, the bot
+  targets ~1.8x too, not a guess.
+- **Preemptive-exit deadline** = `PREEMPTIVE_EXIT_FRACTION_PCT` (default
+  85%) of that wallet's own average hold time (time from launch to their
+  sell). If they typically sell 20 seconds after launch, the bot targets
+  closing at ~17 seconds — aiming to be out slightly before they usually
+  are, based on their own pattern.
+
+**Be clear about what this is not**: the bot cannot know a specific pending
+sell of theirs before it happens — PumpPortal's data feed only reports
+trades that already confirmed on-chain, so there is no "beat their exact
+transaction" mechanism here, same as the honest limit on the buy side (see
+Sniper reputation below). The preemptive deadline is a bet on their
+*historical average*, which can be wrong on any single trade — a wallet
+having a good streak with a 20-second average hold can absolutely still
+hold one particular coin for 5 minutes, and the bot would exit "early"
+relative to that one trade.
+
+As a backstop alongside the preemptive timer, the existing reactive
+`sniper_exit` logic still applies: the instant the bot actually sees the
+tracked wallet fully exit a coin, it follows immediately regardless of
+current PnL. Whichever of the two triggers first — the learned preemptive
+deadline, or the wallet's real observed sell — closes the position.
+Live-mode sells on these positions also use `PRIORITY_WALLET_FOLLOW_FEE_SOL`
+(see below) so whichever exit path fires, it confirms fast.
+
+With no observed sell history yet for a wallet, positions copying it fall
+back to the normal confidence-scaled take-profit and the reactive
+`sniper_exit`/hold-time safety nets described below — the learned targets
+only kick in once there's real data to learn from.
+
 ## Dynamic take-profit and hold-time caps
 
 By default (`DYNAMIC_TAKE_PROFIT_ENABLED=true`) every exit is a single full
@@ -66,9 +125,12 @@ at buy time from this trade's `DecisionContext` — how it qualified
 (dev/sniper fast-track, market-cap-range entry, or plain volume
 confirmation) and the win rates of the creator and triggering sniper, if
 known. This places a `targetTakeProfitPct` for the position somewhere in
-`[MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT]` (default 50%-150%). Like the
-dev/adaptive-tuning mechanisms above, this is a fixed, logged formula over
-known signals — not a learned model.
+`[MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT]` (default 50%-100%, i.e.
+1.5x-2x). Like the dev/adaptive-tuning mechanisms above, this is a fixed,
+logged formula over known signals — not a learned model. In copy-trade-only
+mode, this confidence-based target is only a fallback for wallets without
+enough sell history yet — see "Copy-trade-only mode" above for the
+wallet's-own-observed-multiple target used once there's real data.
 
 **Sniper support**: if a trusted sniper is confirmed holding the same
 token, the bot keeps aiming for the higher end of the confidence-scaled
@@ -101,10 +163,11 @@ backing at all is judged on confidence alone and isn't subject to this drop.
 Set `DYNAMIC_TAKE_PROFIT_ENABLED=false` to go back to the original flat
 `TAKE_PROFIT_PCT` / `STOP_LOSS_PCT` behavior.
 
-**Worth understanding**: aiming for up to 150% instead of 20% means a
+**Worth understanding**: aiming for up to 100% instead of 20% means a
 position stays exposed to the token for longer, waiting for a bigger move —
 more time for a rug, a liquidity dry-up, or a reversal to happen before the
-single exit lands. The hold-time caps above are the counterweight to that.
+single exit lands. The hold-time caps above (and, in copy-trade-only mode,
+the preemptive-exit timer) are the counterweight to that.
 
 ## Dev reputation & adaptive tuning ("learning" — read this carefully)
 
@@ -152,13 +215,19 @@ accumulates real trade outcomes, persisted in `data/` across restarts:
   trips (`SNIPER_TRUST_MIN_SAMPLES`) at a high enough win rate
   (`SNIPER_TRUST_MIN_WIN_RATE_PCT`), it's trusted, and the bot buys
   immediately whenever that wallet buys into a token it's tracking.
-  - **Manual seeding**: set `PRIORITY_SNIPER_WALLETS` (comma-separated) to
-    treat specific wallets as trusted immediately, on your own say-so,
-    without waiting to earn it. This is "trusted until proven otherwise,"
-    not permanent: once the bot has actually observed enough of that
-    wallet's own round-trips (`SNIPER_REVOKE_MIN_SAMPLES`) and their real
-    performance is bad (at/below `SNIPER_REVOKE_MAX_WIN_RATE_PCT`), the free
-    pass is revoked and it falls back to normal (unearned) status.
+  - **Manual seeding, multiple wallets supported**: set
+    `PRIORITY_SNIPER_WALLETS` (comma-separated — add more wallets any time
+    by appending to the list) to treat specific wallets as trusted
+    immediately, on your own say-so, without waiting to earn it. Every
+    wallet in the list is tracked, copy-traded, and learned from
+    independently and identically — each gets its own buy/sell-context
+    averages and its own preemptive-exit target. This is "trusted until
+    proven otherwise," not permanent: once the bot has actually observed
+    enough of a wallet's own round-trips (`SNIPER_REVOKE_MIN_SAMPLES`) and
+    its real performance is bad (at/below `SNIPER_REVOKE_MAX_WIN_RATE_PCT`),
+    its free pass is revoked and it falls back to normal (unearned) status
+    — in `COPY_TRADE_ONLY_MODE`, a revoked wallet simply stops triggering
+    buys, same as if it were never in the list.
   - **Anti-rug-filter override**: unlike an earned-trust sniper, a
     `PRIORITY_SNIPER_WALLETS` buy makes the bot copy the same buy even on a
     token that was otherwise blocked by `MAX_DEV_HOLD_PCT` or dev
@@ -174,16 +243,23 @@ accumulates real trade outcomes, persisted in `data/` across restarts:
     out why this wallet picks what it picks" mechanism: purely descriptive
     of what's actually been observed, not a guess — and it's what feeds the
     adaptive tuner's market-cap-range nudging above.
-  - **Live-mode follow fee**: when a buy is triggered by copying a
-    `PRIORITY_SNIPER_WALLETS` wallet, live-mode trades use
-    `PRIORITY_WALLET_FOLLOW_FEE_SOL` instead of `PRIORITY_FEE_SOL`. To be
-    clear about what this is and isn't: PumpPortal's data feed only reports
-    trades that have already landed on-chain, so there is no way for this
-    bot to see or beat a *pending* transaction of theirs — this is **not**
-    front-running. It's a fast-follow: a higher fee just helps our own
-    copy-trade buy confirm sooner once we've seen theirs, on the assumption
-    other bots/traders are racing to copy the same wallet the moment its
-    buy becomes visible.
+  - **Sell-context analysis**: symmetrically, every observed sell from a
+    `PRIORITY_SNIPER_WALLETS` wallet records market cap and time-since-launch
+    at that moment (`avgMarketCapUsdAtSell`, `avgTimeSinceLaunchMsAtSell`).
+    This is what "copy-trade-only mode" above uses to build the preemptive-
+    exit timing and the wallet's-own-multiple take-profit target — the
+    "when does this wallet get out, and at what price" half of the analysis.
+  - **Live-mode follow fee, buy AND sell**: when a buy is triggered by
+    copying a `PRIORITY_SNIPER_WALLETS` wallet, live-mode trades use
+    `PRIORITY_WALLET_FOLLOW_FEE_SOL` instead of `PRIORITY_FEE_SOL` — and the
+    same higher fee applies to the eventual sell on that position too,
+    whichever exit reason ends up triggering it. To be clear about what
+    this is and isn't: PumpPortal's data feed only reports trades that have
+    already landed on-chain, so there is no way for this bot to see or beat
+    a *pending* transaction of theirs — this is **not** front-running. It's
+    a fast-follow: a higher fee just helps our own trade confirm sooner once
+    we've seen theirs (or once our own preemptive timer fires), on the
+    assumption other bots/traders are racing to copy the same wallet.
   - **Sampling limitation, worth understanding**: we only ever see the
     slice of a sniper's activity that happens while we're actively watching
     a given mint. A sniper who holds longer than our watch window, or exits
@@ -343,15 +419,13 @@ that's a "much later, after real data has piled up" thing, not a now thing).
 ## Risks (read this)
 
 - **Brand-new pump.fun tokens are extremely thin-liquidity and adversarial.**
-  Rug pulls, honeypots, and instant single-block dumps are common. The
-  `MAX_DEV_HOLD_PCT` filter and entry gate (`ENTRY_FILTER_MODE`) reduce
-  exposure to the most obvious cases but do not make this safe — nothing
-  prevents you from buying into a token that goes to zero a second later.
-  With `ENTRY_FILTER_MODE=market_cap` (the default), the bot buys the
-  instant a token is created if it's in the configured market-cap window —
-  there is no volume-confirmation wait at all in this mode, which is faster
-  but means less confirmation that real trading activity exists before you
-  buy in.
+  Rug pulls, honeypots, and instant single-block dumps are common. With
+  `COPY_TRADE_ONLY_MODE=true` (the default), the `MAX_DEV_HOLD_PCT` filter
+  doesn't apply to these buys at all (see the anti-rug-override bullet
+  below) — you're relying entirely on the tracked wallet's own judgment.
+  With copy-trade-only mode off, `MAX_DEV_HOLD_PCT`/`ENTRY_FILTER_MODE`
+  reduce exposure to the most obvious cases but still don't make this safe
+  — nothing prevents buying into a token that goes to zero a second later.
 - **A stop-loss is often unenforceable in practice** on a bonding curve — by
   the time your sell transaction lands, price may already be far past where
   you tried to exit. Live losses can exceed your configured `STOP_LOSS_PCT`
@@ -388,6 +462,16 @@ that's a "much later, after real data has piled up" thing, not a now thing).
   wallet's judgment is wrong on a given token, this override doesn't catch
   it. Remove the wallet from `PRIORITY_SNIPER_WALLETS` if you want to stop
   this override without disabling sniper tracking entirely.
+- **The preemptive-exit deadline is a bet on a wallet's historical average,
+  not a guarantee about any single trade.** A wallet that typically sells
+  20 seconds after launch can still hold one particular coin for 5 minutes;
+  the bot would still try to exit around the ~17-second mark on that trade,
+  which may be well before the wallet's own real exit and could mean
+  leaving profit on the table (or, worse, exiting into a dip the wallet
+  itself was patient enough to ride through). The reactive `sniper_exit`
+  (follow their real sell the instant it's observed) still fires
+  independently, but only once their actual sell happens — it does not
+  correct a preemptive exit that already happened first.
 - **The buy-context-driven tuner nudge and the follow-fee both act on
   *observed* behavior, not intent.** If the tracked wallet's actual strategy
   changes, or it's briefly noisy/manipulated, the tuner will still nudge the

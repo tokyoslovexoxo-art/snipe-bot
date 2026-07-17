@@ -24,21 +24,28 @@ function printBanner(): void {
     ` Stop loss:       -${config.stopLossPct}%`,
     ` Max hold time:   ${config.maxHoldTimeMs / 1000}s hard cap, ${config.unsupportedMaxHoldMs / 1000}s if unsupported`,
     ` Sniper exit:     ${config.sniperExitEnabled ? "on" : "off"} (follow a trusted sniper out immediately if they fully exit)`,
-    ` Entry filter:    ${config.entryFilterMode}` +
-      (config.entryFilterMode !== "volume"
-        ? ` ($${config.entryMinMarketCapUsd}-$${config.entryMaxMarketCapUsd} market cap)`
-        : "") +
-      (config.entryFilterMode !== "market_cap"
-        ? ` (${config.minVolumeSol} SOL within ${config.volumeWindowMs / 1000}s of launch)`
-        : ""),
+    config.copyTradeOnlyMode
+      ? ` Entry filter:    COPY-TRADE ONLY — buys ONLY when a priority wallet buys (${config.prioritySniperWallets.length} wallet(s) tracked)`
+      : ` Entry filter:    ${config.entryFilterMode}` +
+          (config.entryFilterMode !== "volume"
+            ? ` ($${config.entryMinMarketCapUsd}-$${config.entryMaxMarketCapUsd} market cap)`
+            : "") +
+          (config.entryFilterMode !== "market_cap"
+            ? ` (${config.minVolumeSol} SOL within ${config.volumeWindowMs / 1000}s of launch)`
+            : ""),
     ` Max positions:   ${config.maxConcurrentPositions}`,
-    ` Max dev hold:    ${config.maxDevHoldPct}% (anti-rug filter)`,
+    ` Max dev hold:    ${config.maxDevHoldPct}% (anti-rug filter${config.copyTradeOnlyMode ? ", overridden by priority wallet buys" : ""})`,
     ` Dev tracking:    ${config.devTrackingEnabled ? "on" : "off"} (remembers devs across restarts)`,
     ` Adaptive tuning: ${config.adaptiveTuningEnabled ? "on" : "off"} (bounded, rule-based filter nudging)`,
     ` Sniper tracking: ${config.sniperTrackingEnabled ? "on" : "off"}${config.prioritySniperWallets.length > 0 ? ` (${config.prioritySniperWallets.length} priority wallet(s) seeded)` : ""}`,
+    config.copyTradeOnlyMode
+      ? ` Preemptive exit: targets closing at ${config.preemptiveExitFractionPct}% of each priority wallet's own average hold time (needs ${config.preemptiveExitMinSamples}+ observed sells first)`
+      : "",
     "==================================================",
   ];
-  for (const line of lines) logger.info(line);
+  for (const line of lines) {
+    if (line) logger.info(line);
+  }
 
   if (!config.dryRun) {
     logger.warn(
@@ -61,7 +68,14 @@ async function main(): Promise<void> {
   const sniperReputation = new SniperReputationStore();
   const sniperTracker = new SniperTracker(socket, sniperReputation);
   const discovery = new DiscoveryService(socket, devReputation, tuner, sniperTracker, sniperReputation);
-  const positionManager = new PositionManager(socket, trader, devReputation, tuner, sniperTracker);
+  const positionManager = new PositionManager(
+    socket,
+    trader,
+    devReputation,
+    tuner,
+    sniperTracker,
+    sniperReputation
+  );
 
   discovery.on("qualified", (signal: QualifiedSignal) => {
     void positionManager.onQualified(signal);

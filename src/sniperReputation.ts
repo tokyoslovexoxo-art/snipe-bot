@@ -67,6 +67,9 @@ export class SniperReputationStore {
         avgMarketCapUsdAtBuy: 0,
         avgDevHoldPctAtBuy: 0,
         avgTimeSinceLaunchMsAtBuy: 0,
+        sellContextSamples: 0,
+        avgMarketCapUsdAtSell: 0,
+        avgTimeSinceLaunchMsAtSell: 0,
       };
       this.snipers.set(wallet, rec);
     }
@@ -112,6 +115,27 @@ export class SniperReputationStore {
         `devHold=${devHoldPct.toFixed(1)}%, ${timeSinceLaunchMs}ms after launch. Running averages: ` +
         `mcap=$${rec.avgMarketCapUsdAtBuy.toFixed(0)}, devHold=${rec.avgDevHoldPctAtBuy.toFixed(1)}%, ` +
         `${rec.avgTimeSinceLaunchMsAtBuy.toFixed(0)}ms.`
+    );
+  }
+
+  /**
+   * Records the situation a (typically priority-seeded) wallet just sold
+   * into, as running averages — the timing/price half of "why does this
+   * wallet pick what it picks, and when does it get out," used to build the
+   * preemptive-exit target (see positionManager.ts).
+   */
+  recordSellContext(wallet: string, marketCapUsd: number, timeSinceLaunchMs: number): void {
+    const rec = this.getOrCreate(wallet);
+    const n = rec.sellContextSamples + 1;
+    rec.avgMarketCapUsdAtSell += (marketCapUsd - rec.avgMarketCapUsdAtSell) / n;
+    rec.avgTimeSinceLaunchMsAtSell += (timeSinceLaunchMs - rec.avgTimeSinceLaunchMsAtSell) / n;
+    rec.sellContextSamples = n;
+    rec.lastSeenAt = Date.now();
+    this.save();
+    logger.info(
+      `Sniper ${wallet.slice(0, 8)}... sell-context sample #${n}: mcap=$${marketCapUsd.toFixed(0)}, ` +
+        `${timeSinceLaunchMs}ms after launch. Running averages: mcap=$${rec.avgMarketCapUsdAtSell.toFixed(0)}, ` +
+        `${rec.avgTimeSinceLaunchMsAtSell.toFixed(0)}ms.`
     );
   }
 

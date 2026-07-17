@@ -5,6 +5,7 @@ import { Trader } from "./pumpportal/trade";
 import { DevReputationStore } from "./devReputation";
 import { AdaptiveTuner } from "./adaptiveTuner";
 import { SniperTracker, TrustedSniperSellSignal } from "./sniperTracker";
+import { SniperReputationStore } from "./sniperReputation";
 import { computeConfidenceScore, targetTakeProfitFromScore } from "./confidence";
 import { ClosedPosition, ExitReason, Position, TokenTradeEvent } from "./types";
 import { QualifiedSignal } from "./discovery";
@@ -29,7 +30,8 @@ export class PositionManager {
     private trader: Trader,
     private devReputation: DevReputationStore,
     private tuner: AdaptiveTuner,
-    private sniperTracker: SniperTracker
+    private sniperTracker: SniperTracker,
+    private sniperReputation: SniperReputationStore
   ) {}
 
   start(): void {
@@ -86,13 +88,45 @@ export class PositionManager {
     if (signal.creatorWallet) this.devReputation.recordBuy(signal.creatorWallet);
 
     const confidenceScore = computeConfidenceScore(signal);
-    const targetTakeProfitPct = targetTakeProfitFromScore(
+    let targetTakeProfitPct = targetTakeProfitFromScore(
       confidenceScore,
       config.minTakeProfitPct,
       config.maxTakeProfitPct
     );
 
     const now = Date.now();
+    let preemptiveExitAtMs: number | null = null;
+
+    if (isPriorityWalletFollow) {
+      const record = this.sniperReputation.getRecord(signal.triggeringSniperWallet!);
+      if (record && record.sellContextSamples >= config.preemptiveExitMinSamples) {
+        // Preemptive exit timing: aim to close a bit before this wallet's
+        // own average hold time (time from launch to their sell), measured
+        // from our best estimate of launch time (openedAt minus how long it
+        // took us to qualify — we bought right when they did).
+        const launchTimeApprox = now - signal.timeToQualifyMs;
+        const targetHoldMs =
+          record.avgTimeSinceLaunchMsAtSell * (config.preemptiveExitFractionPct / 100);
+        preemptiveExitAtMs = launchTimeApprox + targetHoldMs;
+
+        // Take-profit target: use this wallet's own observed average
+        // multiple (avg sell mcap / avg buy mcap) if we also have enough buy
+        // samples — real data on what THIS wallet actually realizes beats a
+        // generic confidence score once we have it.
+        if (
+          record.buyContextSamples >= config.preemptiveExitMinSamples &&
+          record.avgMarketCapUsdAtBuy > 0
+        ) {
+          const impliedMultiplePct =
+            (record.avgMarketCapUsdAtSell / record.avgMarketCapUsdAtBuy - 1) * 100;
+          targetTakeProfitPct = Math.min(
+            config.maxTakeProfitPct,
+            Math.max(config.minTakeProfitPct, impliedMultiplePct)
+          );
+        }
+      }
+    }
+
     const position: Position = {
       mint: signal.mint,
       symbol: signal.symbol,
@@ -122,12 +156,17 @@ export class PositionManager {
       confidenceScore,
       targetTakeProfitPct,
       sniperSupportSeen: this.sniperTracker.hasTrustedHolder(signal.mint),
+      preemptiveExitAtMs,
     };
     this.positions.set(signal.mint, position);
+    const preemptiveNote =
+      preemptiveExitAtMs !== null
+        ? `, preemptive exit in ${((preemptiveExitAtMs - now) / 1000).toFixed(0)}s`
+        : "";
     logger.info(
       `OPENED ${position.symbol} (${position.mint.slice(0, 8)}...) ` +
         `${position.solSpent.toFixed(4)} SOL @ ${position.entryPricePerToken.toExponential(4)} SOL/token ` +
-        `(confidence=${confidenceScore.toFixed(2)}, target=+${targetTakeProfitPct.toFixed(0)}%)`
+        `(confidence=${confidenceScore.toFixed(2)}, target=+${targetTakeProfitPct.toFixed(0)}%${preemptiveNote})`
     );
   }
 
@@ -168,6 +207,11 @@ export class PositionManager {
     for (const position of this.positions.values()) {
       if (now - position.openedAt >= config.maxHoldTimeMs) {
         void this.closePosition(position, "max_hold_time");
+        continue;
+      }
+
+      if (position.preemptiveExitAtMs !== null && now >= position.preemptiveExitAtMs) {
+        void this.closePosition(position, "preemptive_exit");
         continue;
       }
 
@@ -244,10 +288,22 @@ export class PositionManager {
     this.closing.add(position.mint);
 
     try {
+      // Same fast-follow fee as the buy side (see config.priorityWalletFollowFeeSol):
+      // any exit on a copy-traded position benefits from confirming quickly,
+      // whether it's the preemptive timer, following the wallet's own sell,
+      // or a plain TP/SL hit while riding alongside them.
+      const isPriorityWalletCopy =
+        position.qualificationPath === "sniper_trusted" &&
+        position.triggeringSniperWallet !== null &&
+        config.prioritySniperWallets.includes(position.triggeringSniperWallet);
+      const priorityFeeOverride = isPriorityWalletCopy ? config.priorityWalletFollowFeeSol : undefined;
+
       const result = await this.trader.sell(
         position.mint,
         position.currentPricePerToken,
-        position.tokenAmount
+        position.tokenAmount,
+        100,
+        priorityFeeOverride
       );
 
       if (!result.success) {

@@ -42,6 +42,10 @@ export type ExitReason =
   | "sniper_exit"
   | "unsupported_timeout"
   | "manual"
+  // Closed preemptively, based on a priority wallet's own historical
+  // average hold time — see config.preemptiveExitFractionPct. Only used in
+  // copy-trade-only mode.
+  | "preemptive_exit"
   // No longer produced (the staged partial-take-profit mechanism was
   // removed in favor of a single full sell), kept here only so old
   // trades.jsonl entries with these values still type-check if re-read.
@@ -111,6 +115,11 @@ export interface Position extends DecisionContext {
   // stands on confidence alone) apart from "had it and lost it" (drop to
   // MIN_TAKE_PROFIT_PCT) — see positionManager.ts.
   sniperSupportSeen: boolean;
+  // Set at buy time, only for copy-trades of a PRIORITY_SNIPER_WALLETS
+  // wallet with enough observed sell history: the timestamp at which we
+  // preemptively close, targeting a bit before that wallet's own average
+  // hold time. Null if not applicable / not enough data yet.
+  preemptiveExitAtMs: number | null;
 }
 
 export interface DevRecord {
@@ -138,6 +147,12 @@ export interface SniperRecord {
   avgMarketCapUsdAtBuy: number;
   avgDevHoldPctAtBuy: number;
   avgTimeSinceLaunchMsAtBuy: number;
+  // Same idea, for this wallet's observed sells — only populated for
+  // PRIORITY_SNIPER_WALLETS. Feeds the preemptive-exit timing AND take-
+  // profit targets (see config.preemptiveExit* / positionManager.ts).
+  sellContextSamples: number;
+  avgMarketCapUsdAtSell: number;
+  avgTimeSinceLaunchMsAtSell: number;
 }
 
 /**

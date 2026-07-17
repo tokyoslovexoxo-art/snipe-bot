@@ -65,7 +65,8 @@ export class Trader {
     mint: string,
     currentPricePerToken: number,
     tokenAmountHeld: number,
-    percentageOfHolding: number = 100
+    percentageOfHolding: number = 100,
+    priorityFeeSolOverride?: number
   ): Promise<TradeResult> {
     if (config.dryRun) {
       const amountToSell = (tokenAmountHeld * percentageOfHolding) / 100;
@@ -74,7 +75,8 @@ export class Trader {
     return this.executeLive(
       { action: "sell", mint, amount: `${percentageOfHolding}%`, denominatedInSol: "false" },
       currentPricePerToken,
-      (tokenAmountHeld * percentageOfHolding) / 100
+      (tokenAmountHeld * percentageOfHolding) / 100,
+      priorityFeeSolOverride
     );
   }
 

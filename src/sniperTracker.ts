@@ -42,9 +42,11 @@ export interface TrustedSniperSellSignal {
  *
  * For manually-seeded PRIORITY_SNIPER_WALLETS specifically, also records the
  * situational context of each buy (market cap, creator's dev-hold%, time
- * since launch) into SniperReputationStore — this is the "why does this
- * wallet pick what it picks" analysis, built from what we can actually
- * observe rather than guessed.
+ * since launch) AND each sell (market cap, time since launch) into
+ * SniperReputationStore — this is the "why does this wallet pick what it
+ * picks, and when does it get out" analysis, built from what we can
+ * actually observe rather than guessed. See positionManager.ts for how the
+ * sell side feeds a preemptive-exit target.
  *
  * IMPORTANT sampling caveat: we only ever see the portion of a sniper's
  * activity that happens while we're actively watching a given mint (the
@@ -134,6 +136,14 @@ export class SniperTracker extends EventEmitter {
       basis.totalSolSpent -= costOfSold;
 
       this.sniperReputation.recordRoundTrip(wallet, pnlSol, pnlSol > 0);
+
+      if (config.prioritySniperWallets.includes(wallet) && typeof evt.marketCapSol === "number") {
+        this.sniperReputation.recordSellContext(
+          wallet,
+          evt.marketCapSol * config.solUsdPrice,
+          Date.now() - activeMint.createdAt
+        );
+      }
 
       if (this.sniperReputation.isTrusted(wallet)) {
         const fullyExited = basis.totalTokens <= DUST_THRESHOLD;

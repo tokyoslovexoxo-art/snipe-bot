@@ -40,9 +40,13 @@ function priceFromCurve(vSol: number, vTokens: number): number {
 
 /**
  * Watches new pump.fun launches and emits "qualified" once a token clears
- * its entry gate (ENTRY_FILTER_MODE: market-cap range, volume threshold, or
- * both) within VOLUME_WINDOW_MS. Tokens that never clear the bar in time are
- * dropped (and unwatched) to keep the subscription set bounded.
+ * its entry gate. In COPY_TRADE_ONLY_MODE (the default), the ONLY gate is a
+ * PRIORITY_SNIPER_WALLETS wallet buying in — market_cap/volume/dev_trusted
+ * qualification and earned-trust (non-priority) sniper fast-tracking are
+ * all disabled. With copy-trade-only mode off, the normal ENTRY_FILTER_MODE
+ * (market-cap range, volume threshold, or both) applies instead. Tokens
+ * that never clear the bar in time are dropped (and unwatched) to keep the
+ * subscription set bounded.
  *
  * Creator wallets with a known-bad track record, or a too-high dev-hold%,
  * are skipped by the NORMAL qualification paths — but every token is still
@@ -161,7 +165,7 @@ export class DiscoveryService extends EventEmitter {
       );
     }
 
-    if (trustLevel === "trusted" && !blockedByAntiRugFilter) {
+    if (trustLevel === "trusted" && !blockedByAntiRugFilter && !config.copyTradeOnlyMode) {
       logger.info(
         `FAST-TRACK: ${symbol} (${evt.mint.slice(0, 8)}...) — creator ${creatorWallet.slice(0, 8)}... ` +
           `has a strong track record with this bot, buying immediately without waiting for volume.`
@@ -227,6 +231,11 @@ export class DiscoveryService extends EventEmitter {
     if (!entry) return; // already qualified/pruned, or dev-fast-tracked already
 
     const isPriorityWallet = config.prioritySniperWallets.includes(signal.wallet);
+    if (config.copyTradeOnlyMode && !isPriorityWallet) {
+      // Copy-trade-only mode: ONLY a manually-seeded priority wallet's buy
+      // qualifies a token — an ordinary earned-trust sniper's buy is ignored.
+      return;
+    }
     if (entry.blockedByAntiRugFilter && !isPriorityWallet) {
       // Only a manually-seeded priority wallet's judgment overrides the
       // anti-rug filter; an ordinary earned-trust sniper's doesn't.
@@ -291,6 +300,10 @@ export class DiscoveryService extends EventEmitter {
   }
 
   private maybeQualify(entry: TrackedToken): void {
+    // Copy-trade-only mode: the market_cap/volume entry gate is disabled
+    // entirely — only a priority wallet's own buy (handleTrustedSniperBuy)
+    // can qualify a token.
+    if (config.copyTradeOnlyMode) return;
     if (!this.meetsEntryCondition(entry)) return;
 
     this.tracked.delete(entry.mint);
@@ -323,17 +336,27 @@ export class DiscoveryService extends EventEmitter {
 
   private pruneStale(): void {
     const now = Date.now();
+    // Copy-trade-only mode waits much longer for the priority wallet's own
+    // buy to show up, rather than a short volume/market-cap confirmation
+    // window that doesn't apply in this mode.
+    const windowMs = config.copyTradeOnlyMode ? config.copyTradeWatchWindowMs : config.volumeWindowMs;
     for (const [mint, entry] of this.tracked) {
-      if (now - entry.createdAt >= config.volumeWindowMs) {
+      if (now - entry.createdAt >= windowMs) {
         this.tracked.delete(mint);
         this.socket.unwatchMint(mint);
         this.sniperTracker.stopTracking(mint);
-        const marketCapUsd = entry.currentMarketCapSol * config.solUsdPrice;
-        logger.info(
-          `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): never cleared the "${config.entryFilterMode}" ` +
-            `entry gate (mcap=$${marketCapUsd.toFixed(0)}, volume=${entry.cumulativeVolumeSol.toFixed(3)} SOL) ` +
-            `within ${config.volumeWindowMs}ms`
-        );
+        if (config.copyTradeOnlyMode) {
+          logger.info(
+            `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): no priority wallet bought in within ${windowMs}ms`
+          );
+        } else {
+          const marketCapUsd = entry.currentMarketCapSol * config.solUsdPrice;
+          logger.info(
+            `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): never cleared the "${config.entryFilterMode}" ` +
+              `entry gate (mcap=$${marketCapUsd.toFixed(0)}, volume=${entry.cumulativeVolumeSol.toFixed(3)} SOL) ` +
+              `within ${windowMs}ms`
+          );
+        }
       }
     }
   }
