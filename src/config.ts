@@ -102,10 +102,22 @@ export const config = {
   // "until proven otherwise": once we've actually observed enough of their
   // round-trips ourselves, if their real performance is bad they lose this
   // free pass (see sniperRevoke* below) — it is not a permanent override.
-  prioritySniperWallets: (process.env.PRIORITY_SNIPER_WALLETS ?? "")
-    .split(",")
-    .map((w) => w.trim())
-    .filter((w) => w.length > 0),
+  // Also accepts PRIORITY_SNIPER_WALLETS_B64 (comma-separated, each entry
+  // base64-encoded) for any address you'd rather not keep in plain text in
+  // this file — decoded here at load time, merged with the plain list
+  // above. Functionally identical either way: this only affects how the
+  // address is stored in .env, not how it's matched/tracked/traded.
+  prioritySniperWallets: [
+    ...(process.env.PRIORITY_SNIPER_WALLETS ?? "")
+      .split(",")
+      .map((w) => w.trim())
+      .filter((w) => w.length > 0),
+    ...(process.env.PRIORITY_SNIPER_WALLETS_B64 ?? "")
+      .split(",")
+      .map((w) => w.trim())
+      .filter((w) => w.length > 0)
+      .map((w) => Buffer.from(w, "base64").toString("utf-8")),
+  ],
   sniperRevokeMinSamples: num("SNIPER_REVOKE_MIN_SAMPLES", 3),
   sniperRevokeMaxWinRatePct: num("SNIPER_REVOKE_MAX_WIN_RATE_PCT", 40),
 

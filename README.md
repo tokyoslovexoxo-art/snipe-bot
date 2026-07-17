@@ -227,7 +227,10 @@ accumulates real trade outcomes, persisted in `data/` across restarts:
     its real performance is bad (at/below `SNIPER_REVOKE_MAX_WIN_RATE_PCT`),
     its free pass is revoked and it falls back to normal (unearned) status
     — in `COPY_TRADE_ONLY_MODE`, a revoked wallet simply stops triggering
-    buys, same as if it were never in the list.
+    buys, same as if it were never in the list. If you'd rather not keep an
+    address in plain text in `.env`, `PRIORITY_SNIPER_WALLETS_B64` accepts
+    the same comma-separated list with each entry base64-encoded instead —
+    functionally identical, decoded at load time. See `.env.example`.
   - **Anti-rug-filter override**: unlike an earned-trust sniper, a
     `PRIORITY_SNIPER_WALLETS` buy makes the bot copy the same buy even on a
     token that was otherwise blocked by `MAX_DEV_HOLD_PCT` or dev
