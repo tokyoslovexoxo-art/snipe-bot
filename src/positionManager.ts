@@ -135,17 +135,40 @@ export class PositionManager {
     this.evaluateExit(position);
   }
 
+  /**
+   * BUGFIX (identified from live dry-run data: 18/18 trades exiting via
+   * unsupported_timeout at a suspiciously uniform ~-5%): this used to fire
+   * for ANY position lacking a trusted sniper holder, including ones that
+   * never had one to begin with (the "volume"/"dev_trusted" paths, which
+   * don't involve a sniper at all). Since sniper trust takes real observed
+   * round-trips to earn, almost nothing qualifies as "trusted" early on —
+   * so in practice EVERY position was getting force-sold at
+   * UNSUPPORTED_MAX_HOLD_MS regardless of qualification path, before ever
+   * getting a real chance at the take-profit target. Over enough rapid
+   * 3-minute cycles this alone can and did drain the whole paper balance.
+   *
+   * Fixed to use the same distinction as effectiveTakeProfitPct: only cut
+   * early when a position HAD confirmed sniper backing and LOST it — never
+   * having any sniper signal isn't held against a trade.
+   */
   private checkHoldTimes(): void {
     const now = Date.now();
+    const tunedUnsupportedMaxHoldMs = this.tuner.get().unsupportedMaxHoldMs;
     for (const position of this.positions.values()) {
       if (now - position.openedAt >= config.maxHoldTimeMs) {
         void this.closePosition(position, "max_hold_time");
         continue;
       }
+
+      if (!config.dynamicTakeProfitEnabled) continue;
+
+      const currentlySupported = this.sniperTracker.hasTrustedHolder(position.mint);
+      if (currentlySupported) position.sniperSupportSeen = true;
+
       if (
-        config.dynamicTakeProfitEnabled &&
-        now - position.openedAt >= config.unsupportedMaxHoldMs &&
-        !this.sniperTracker.hasTrustedHolder(position.mint)
+        position.sniperSupportSeen &&
+        !currentlySupported &&
+        now - position.openedAt >= tunedUnsupportedMaxHoldMs
       ) {
         void this.closePosition(position, "unsupported_timeout");
       }

@@ -77,7 +77,8 @@ async function main(): Promise<void> {
       `[STATUS] ${balanceLine}Open positions: ${positionManager.openCount} | ` +
         `Known devs: ${devSummary.totalDevs} (${devSummary.trusted} trusted, ${devSummary.blacklisted} blacklisted) | ` +
         `Known snipers: ${sniperSummary.totalSnipers} (${sniperSummary.trusted} trusted) | ` +
-        `Tuned filters: minVolume=${tuned.minVolumeSol.toFixed(3)} SOL, maxDevHold=${tuned.maxDevHoldPct.toFixed(1)}%`
+        `Tuned filters: minVolume=${tuned.minVolumeSol.toFixed(3)} SOL, maxDevHold=${tuned.maxDevHoldPct.toFixed(1)}%, ` +
+        `unsupportedMaxHold=${(tuned.unsupportedMaxHoldMs / 1000).toFixed(0)}s`
     );
 
     const snapshot: StatusSnapshot = {

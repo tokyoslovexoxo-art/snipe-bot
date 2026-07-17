@@ -194,6 +194,7 @@ function renderRepCards(status) {
       " (" + status.sniperSummary.trusted + " trusted)");
     cards += card("Tuned min volume", status.tunedParams.minVolumeSol.toFixed(3) + " SOL");
     cards += card("Tuned max dev hold", status.tunedParams.maxDevHoldPct.toFixed(1) + "%");
+    cards += card("Tuned unsupported hold", (status.tunedParams.unsupportedMaxHoldMs / 1000).toFixed(0) + "s");
   } else {
     cards = '<div class="empty">Bot has not written a status snapshot yet — is it running?</div>';
   }

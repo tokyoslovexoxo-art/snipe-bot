@@ -85,10 +85,18 @@ left holding after they've moved on.
 
 - `MAX_HOLD_TIME_MS` — the absolute backstop (unconditional): force-exit no
   matter what once a position has been open this long.
-- `UNSUPPORTED_MAX_HOLD_MS` — a shorter cap that applies whenever no trusted
-  sniper is currently holding the token (whether one ever was, or never
-  was). Keeps a position from sitting around chasing a big target with zero
-  corroborating signal present right now.
+- `UNSUPPORTED_MAX_HOLD_MS` — a shorter cap that applies **only to positions
+  that had confirmed trusted-sniper backing and then lost it**. A position
+  that never had any sniper signal at all (the `volume`/`dev_trusted` paths)
+  isn't held to this shorter clock — it runs to `MAX_HOLD_TIME_MS` like
+  normal. (Earlier versions applied this cap to *any* position lacking a
+  trusted holder, including ones that never had one — since sniper trust
+  takes real observed round-trips to earn, almost nothing qualifies early
+  on, so in practice every position was getting force-sold at 3 minutes
+  regardless of qualification path, before ever getting a real shot at the
+  take-profit target. Fixed after live dry-run data showed 18/18 trades
+  exiting this way at a suspiciously uniform ~-5% — enough rapid 3-minute
+  cycles like that can fully drain the paper balance on its own.)
 
 Set `DYNAMIC_TAKE_PROFIT_ENABLED=false` to go back to the original flat
 `TAKE_PROFIT_PCT` / `STOP_LOSS_PCT` behavior with no staged exits.
@@ -122,6 +130,16 @@ accumulates real trade outcomes, persisted in `data/` across restarts:
   `TUNING_MAX_ADJUST_PCT` away from your `.env` baselines. It never touches
   `TAKE_PROFIT_PCT` / `STOP_LOSS_PCT` — your exit economics stay exactly
   what you set.
+  It also watches for one exit reason dominating a window (currently:
+  `unsupported_timeout` making up half or more of recent trades) — a sign
+  something structural is cutting positions short rather than normal
+  variance — and raises `UNSUPPORTED_MAX_HOLD_MS` (same bounded clamp) in
+  response. This is the bot's one form of genuine "reflect on why it lost
+  and self-correct": bounded, logged, and limited to nudging existing
+  numbers — it can't rewrite its own logic. The actual logic bug behind the
+  first real-world case of this (see the take-profit section above) still
+  needed a real code fix; the tuner can compensate for degree, not for a
+  wrong comparison.
 
 - **`src/sniperReputation.ts` / `src/sniperTracker.ts`**: while the bot is
   watching a mint (from launch through however long discovery or an open

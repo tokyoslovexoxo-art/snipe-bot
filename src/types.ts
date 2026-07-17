@@ -154,7 +154,7 @@ export interface StatusSnapshot {
   openPositions: Position[];
   devSummary: { totalDevs: number; trusted: number; blacklisted: number };
   sniperSummary: { totalSnipers: number; trusted: number };
-  tunedParams: { minVolumeSol: number; maxDevHoldPct: number };
+  tunedParams: { minVolumeSol: number; maxDevHoldPct: number; unsupportedMaxHoldMs: number };
 }
 
 export interface ClosedPosition extends Position {
