@@ -78,8 +78,15 @@ export class PumpPortalSocket extends EventEmitter {
     if (typeof msg !== "object" || msg === null) return;
     const obj = msg as Record<string, unknown>;
 
-    // Subscription ack / error messages don't have txType; ignore them.
-    if (typeof obj.txType !== "string") return;
+    // Subscription ack / error messages don't have txType. Log them instead
+    // of silently discarding — this is the only visibility we have into
+    // whether PumpPortal actually accepted a subscribeAccountTrade request
+    // (e.g. a malformed request could come back as an error here rather
+    // than a thrown exception, and we'd otherwise never see it).
+    if (typeof obj.txType !== "string") {
+      logger.info(`[PumpPortal] Non-trade message: ${JSON.stringify(obj).slice(0, 500)}`);
+      return;
+    }
 
     if (obj.txType === "create") {
       this.emit("newToken", obj as unknown as NewTokenEvent);
@@ -90,7 +97,10 @@ export class PumpPortalSocket extends EventEmitter {
 
   private send(payload: Record<string, unknown>): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      logger.info(`[PumpPortal] Sending: ${JSON.stringify(payload)}`);
       this.ws.send(JSON.stringify(payload));
+    } else {
+      logger.warn(`[PumpPortal] Socket not open, could not send: ${JSON.stringify(payload)}`);
     }
   }
 
