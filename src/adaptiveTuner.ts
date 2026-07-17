@@ -46,10 +46,28 @@ export class AdaptiveTuner {
   private window: ClosedPosition[] = [];
 
   constructor() {
-    this.current = this.load() ?? this.baseline();
-    // Backward-compat: older tuning.json files predate marketCapRangeUsd.
-    if (!this.current.marketCapRangeUsd) {
-      this.current.marketCapRangeUsd = { minUsd: config.entryMinMarketCapUsd, maxUsd: config.entryMaxMarketCapUsd };
+    const base = this.baseline();
+    const loaded = this.load();
+    // Backward-compat: older tuning.json files predate fields added since
+    // (marketCapRangeUsd, and originally unsupportedMaxHoldMs itself) — merge
+    // over baseline defaults rather than trusting the file has every key, and
+    // guard against any numeric field having come back NaN/undefined, which
+    // would otherwise silently make every clamp()/comparison using it a
+    // no-op (e.g. an always-false hold-time check).
+    this.current = loaded ? { ...base, ...loaded } : base;
+    for (const key of ["minVolumeSol", "maxDevHoldPct", "unsupportedMaxHoldMs"] as const) {
+      if (typeof this.current[key] !== "number" || Number.isNaN(this.current[key])) {
+        this.current[key] = base[key];
+      }
+    }
+    if (
+      !this.current.marketCapRangeUsd ||
+      typeof this.current.marketCapRangeUsd.minUsd !== "number" ||
+      typeof this.current.marketCapRangeUsd.maxUsd !== "number" ||
+      Number.isNaN(this.current.marketCapRangeUsd.minUsd) ||
+      Number.isNaN(this.current.marketCapRangeUsd.maxUsd)
+    ) {
+      this.current.marketCapRangeUsd = base.marketCapRangeUsd;
     }
   }
 
