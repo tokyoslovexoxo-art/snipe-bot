@@ -10,6 +10,12 @@ interface CostBasis {
   totalSolSpent: number;
 }
 
+interface ActiveMint {
+  creatorWallet: string;
+  devHoldPct: number;
+  createdAt: number;
+}
+
 // Floating-point residue after repeated subtraction; treat anything at or
 // below this as "fully sold out" rather than requiring an exact zero.
 const DUST_THRESHOLD = 1e-9;
@@ -34,6 +40,12 @@ export interface TrustedSniperSellSignal {
  * compute their realized PnL on that round trip and feed it to
  * SniperReputationStore.
  *
+ * For manually-seeded PRIORITY_SNIPER_WALLETS specifically, also records the
+ * situational context of each buy (market cap, creator's dev-hold%, time
+ * since launch) into SniperReputationStore — this is the "why does this
+ * wallet pick what it picks" analysis, built from what we can actually
+ * observe rather than guessed.
+ *
  * IMPORTANT sampling caveat: we only ever see the portion of a sniper's
  * activity that happens while we're actively watching a given mint (the
  * qualification window, or the lifetime of a position we hold). A sniper
@@ -42,7 +54,7 @@ export interface TrustedSniperSellSignal {
  * toward fast in-and-out snipers — see README.
  */
 export class SniperTracker extends EventEmitter {
-  private active = new Map<string, string>(); // mint -> creatorWallet
+  private active = new Map<string, ActiveMint>();
   private costBasis = new Map<string, Map<string, CostBasis>>(); // mint -> wallet -> basis
 
   constructor(private socket: PumpPortalSocket, private sniperReputation: SniperReputationStore) {
@@ -53,8 +65,8 @@ export class SniperTracker extends EventEmitter {
     this.socket.on("trade", (evt: TokenTradeEvent) => this.handleTrade(evt));
   }
 
-  startTracking(mint: string, creatorWallet: string): void {
-    this.active.set(mint, creatorWallet);
+  startTracking(mint: string, creatorWallet: string, devHoldPct: number, createdAt: number): void {
+    this.active.set(mint, { creatorWallet, devHoldPct, createdAt });
     if (!this.costBasis.has(mint)) this.costBasis.set(mint, new Map());
   }
 
@@ -79,9 +91,9 @@ export class SniperTracker extends EventEmitter {
     if (!config.sniperTrackingEnabled) return;
     if (!evt.mint || !this.active.has(evt.mint)) return;
 
-    const creatorWallet = this.active.get(evt.mint);
+    const activeMint = this.active.get(evt.mint)!;
     const wallet = evt.traderPublicKey;
-    if (!wallet || wallet === creatorWallet) return; // dev's own activity is tracked separately
+    if (!wallet || wallet === activeMint.creatorWallet) return; // dev's own activity is tracked separately
 
     const mintBasis = this.costBasis.get(evt.mint);
     if (!mintBasis) return;
@@ -94,6 +106,15 @@ export class SniperTracker extends EventEmitter {
       }
       basis.totalTokens += evt.tokenAmount ?? 0;
       basis.totalSolSpent += evt.solAmount ?? 0;
+
+      if (config.prioritySniperWallets.includes(wallet) && typeof evt.marketCapSol === "number") {
+        this.sniperReputation.recordBuyContext(
+          wallet,
+          evt.marketCapSol * config.solUsdPrice,
+          activeMint.devHoldPct,
+          Date.now() - activeMint.createdAt
+        );
+      }
 
       if (this.sniperReputation.isTrusted(wallet)) {
         logger.info(

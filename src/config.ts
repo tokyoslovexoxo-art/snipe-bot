@@ -30,13 +30,40 @@ export const config = {
   // Static take-profit, only used when DYNAMIC_TAKE_PROFIT_ENABLED=false.
   takeProfitPct: num("TAKE_PROFIT_PCT", 20),
   stopLossPct: num("STOP_LOSS_PCT", 10),
+
+  // ==== Entry gate ====
+  // How a token qualifies for a buy:
+  //   "market_cap" - qualifies the instant its market cap is within
+  //                  [ENTRY_MIN_MARKET_CAP_USD, ENTRY_MAX_MARKET_CAP_USD] -
+  //                  no volume wait at all (checked from the creation event
+  //                  onward, so this can fire within the first second).
+  //   "volume"     - the original behavior: wait for MIN_VOLUME_SOL of
+  //                  cumulative bonding-curve buys within VOLUME_WINDOW_MS.
+  //   "both"       - require both conditions at once.
+  entryFilterMode: (process.env.ENTRY_FILTER_MODE ?? "market_cap") as "market_cap" | "volume" | "both",
+  // USD range for "market_cap"/"both" modes. Converted from PumpPortal's
+  // SOL-denominated marketCapSol using SOL_USD_PRICE below.
+  entryMinMarketCapUsd: num("ENTRY_MIN_MARKET_CAP_USD", 2_500),
+  entryMaxMarketCapUsd: num("ENTRY_MAX_MARKET_CAP_USD", 4_000),
+  // Used by "volume"/"both" modes.
   minVolumeSol: num("MIN_VOLUME_SOL", 0.2),
+  // How long we watch a token for either condition (volume threshold and/or
+  // market-cap range, depending on ENTRY_FILTER_MODE) before giving up on it.
   volumeWindowMs: num("VOLUME_WINDOW_MS", 60_000),
   maxConcurrentPositions: num("MAX_CONCURRENT_POSITIONS", 3),
   maxHoldTimeMs: num("MAX_HOLD_TIME_MS", 600_000),
   maxDevHoldPct: num("MAX_DEV_HOLD_PCT", 30),
   slippagePct: num("SLIPPAGE_PCT", 10),
   priorityFeeSol: num("PRIORITY_FEE_SOL", 0.0005),
+  // Used instead of PRIORITY_FEE_SOL, live mode only, specifically for buys
+  // triggered by a PRIORITY_SNIPER_WALLETS wallet (qualificationPath ===
+  // "sniper_trusted"). This is NOT front-running — PumpPortal's feed only
+  // reports trades that already landed on-chain, so there is no pending
+  // transaction of theirs to beat. It's a fast-follow: a higher fee just
+  // gets our own copy-trade buy included/confirmed sooner than it otherwise
+  // would be, on the theory that other bots are racing to copy the same
+  // wallet the moment its buy is visible.
+  priorityWalletFollowFeeSol: num("PRIORITY_WALLET_FOLLOW_FEE_SOL", 0.002),
   pool: process.env.POOL ?? "pump",
 
   logFile: process.env.LOG_FILE ?? "trades.jsonl",
@@ -104,27 +131,8 @@ export const config = {
   // with no corroborating signal left.
   unsupportedMaxHoldMs: num("UNSUPPORTED_MAX_HOLD_MS", 180_000),
 
-  // ==== Staged (partial) profit-taking ====
-  // At MIN_TAKE_PROFIT_PCT, the default behavior is to sell the WHOLE
-  // position — take the win rather than risk it giving it back. The bot
-  // only holds part of the position for a bigger target if BOTH:
-  //   - confidenceScore >= EXTENDED_HOLD_MIN_CONFIDENCE_PCT/100, AND
-  //   - the token's current market cap (converted from PumpPortal's
-  //     SOL-denominated marketCapSol using SOL_USD_PRICE below) is already
-  //     at or above EXTENDED_HOLD_MIN_MARKET_CAP_USD.
-  // This is a real-time confirmation check ("has it actually grown into
-  // this range already"), not a prediction of where it WILL go — this bot
-  // has no ability to forecast future market cap, see README.
-  // When the gate passes, PARTIAL_TAKE_PROFIT_SELL_PCT of the position is
-  // sold at MIN_TAKE_PROFIT_PCT to lock in a real, banked gain; the
-  // remainder's stop-loss moves to breakeven (0%) and its target becomes
-  // the same confidence/sniper-support-scaled logic as before, up to
-  // MAX_TAKE_PROFIT_PCT.
-  extendedHoldMinConfidencePct: num("EXTENDED_HOLD_MIN_CONFIDENCE_PCT", 80),
-  extendedHoldMinMarketCapUsd: num("EXTENDED_HOLD_MIN_MARKET_CAP_USD", 10_000),
-  partialTakeProfitSellPct: num("PARTIAL_TAKE_PROFIT_SELL_PCT", 50),
-  // Manually-set SOL/USD rate used only for the market-cap gate above.
-  // NOT a live price feed — SOL is volatile, keep this reasonably current
+  // Manually-set SOL/USD rate used for the market-cap entry gate above. NOT
+  // a live price feed — SOL is volatile, keep this reasonably current
   // yourself. Set near $76 as of when this was configured (Jul 2026).
   solUsdPrice: num("SOL_USD_PRICE", 76),
 

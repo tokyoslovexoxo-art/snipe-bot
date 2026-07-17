@@ -62,7 +62,21 @@ export class PositionManager {
       return;
     }
 
-    const result = await this.trader.buy(signal.mint, config.buyAmountSol, signal.currentPricePerToken);
+    // Fast-follow (NOT front-running, see config.priorityWalletFollowFeeSol):
+    // when this buy was triggered by a manually-seeded priority wallet, use a
+    // higher priority fee so our copy-trade lands/confirms sooner.
+    const isPriorityWalletFollow =
+      signal.qualificationPath === "sniper_trusted" &&
+      signal.triggeringSniperWallet !== null &&
+      config.prioritySniperWallets.includes(signal.triggeringSniperWallet);
+    const priorityFeeOverride = isPriorityWalletFollow ? config.priorityWalletFollowFeeSol : undefined;
+
+    const result = await this.trader.buy(
+      signal.mint,
+      config.buyAmountSol,
+      signal.currentPricePerToken,
+      priorityFeeOverride
+    );
     if (!result.success) {
       logger.error(`Buy failed for ${signal.symbol} (${signal.mint}): ${result.error}`);
       return;
@@ -87,8 +101,6 @@ export class PositionManager {
       entryPricePerToken: result.pricePerToken,
       tokenAmount: result.filledTokens,
       solSpent: result.filledSol,
-      originalSolSpent: result.filledSol,
-      realizedPnlSolSoFar: 0,
       openedAt: now,
       currentPricePerToken: result.pricePerToken,
       currentMarketCapSol: signal.marketCapSolAtQualification,
@@ -110,7 +122,6 @@ export class PositionManager {
       confidenceScore,
       targetTakeProfitPct,
       sniperSupportSeen: this.sniperTracker.hasTrustedHolder(signal.mint),
-      hasTakenPartialProfit: false,
     };
     this.positions.set(signal.mint, position);
     logger.info(
@@ -209,103 +220,22 @@ export class PositionManager {
   }
 
   /**
-   * Whether we hold the remainder for a bigger target (partial sell now,
-   * keep the rest) instead of taking the full win at MIN_TAKE_PROFIT_PCT.
-   * Deliberately a REAL-TIME confirmation check ("has this already grown
-   * into the target zone"), not a prediction of where it's going — this bot
-   * cannot forecast future market cap, see README.
+   * Every winning trade is a single full sell — no partial-sell/hold-for-
+   * more logic. The only thing that varies per-trade is WHERE the target
+   * sits within [MIN_TAKE_PROFIT_PCT, MAX_TAKE_PROFIT_PCT], via
+   * effectiveTakeProfitPct's confidence/sniper-support scoring.
    */
-  private qualifiesForExtendedHold(position: Position): boolean {
-    if (position.confidenceScore * 100 < config.extendedHoldMinConfidencePct) return false;
-    const currentMarketCapUsd = position.currentMarketCapSol * config.solUsdPrice;
-    return currentMarketCapUsd >= config.extendedHoldMinMarketCapUsd;
-  }
-
   private evaluateExit(position: Position): void {
     const pnlPct =
       ((position.currentPricePerToken - position.entryPricePerToken) / position.entryPricePerToken) * 100;
 
-    // Once a partial profit has been banked, the remainder's downside is
-    // capped at breakeven (0%) instead of -STOP_LOSS_PCT — don't risk a
-    // real, already-secured gain by giving the stop-loss room to bite again.
-    const effectiveStopLossPct = position.hasTakenPartialProfit ? 0 : config.stopLossPct;
-    if (pnlPct <= -effectiveStopLossPct) {
-      void this.closePosition(position, position.hasTakenPartialProfit ? "breakeven_stop" : "stop_loss");
+    if (pnlPct <= -config.stopLossPct) {
+      void this.closePosition(position, "stop_loss");
       return;
     }
 
-    if (position.hasTakenPartialProfit) {
-      // Already banked the base profit; the remainder chases the bigger
-      // confidence/sniper-support-scaled target from here.
-      if (pnlPct >= this.effectiveTakeProfitPct(position)) {
-        void this.closePosition(position, "take_profit");
-      }
-      return;
-    }
-
-    if (pnlPct >= config.minTakeProfitPct) {
-      if (config.dynamicTakeProfitEnabled && this.qualifiesForExtendedHold(position)) {
-        void this.takePartialProfit(position);
-      } else {
-        // Default bias: take the whole win now rather than risk it holding
-        // for more with no strong (80%+ confidence + real mcap growth)
-        // reason to believe it's worth the extra exposure.
-        void this.closePosition(position, "take_profit");
-      }
-    }
-  }
-
-  /** Sells PARTIAL_TAKE_PROFIT_SELL_PCT of the position, keeps the rest open. */
-  private async takePartialProfit(position: Position): Promise<void> {
-    if (this.closing.has(position.mint)) return;
-    this.closing.add(position.mint);
-
-    try {
-      const sellPct = config.partialTakeProfitSellPct;
-      const result = await this.trader.sell(
-        position.mint,
-        position.currentPricePerToken,
-        position.tokenAmount,
-        sellPct
-      );
-
-      if (!result.success) {
-        logger.error(
-          `Partial take-profit sell failed for ${position.symbol} (${position.mint}): ${result.error}. ` +
-            `Position remains open and will be retried on the next price update.`
-        );
-        return;
-      }
-
-      const soldTokens = position.tokenAmount * (sellPct / 100);
-      const costBasisOfSold = position.solSpent * (sellPct / 100);
-      const stagePnlSol = result.filledSol - costBasisOfSold;
-      const stagePnlPct = (stagePnlSol / costBasisOfSold) * 100;
-
-      position.tokenAmount -= soldTokens;
-      position.solSpent -= costBasisOfSold;
-      position.realizedPnlSolSoFar += stagePnlSol;
-      position.hasTakenPartialProfit = true;
-
-      const partialRecord: ClosedPosition = {
-        ...position,
-        closedAt: Date.now(),
-        exitReason: "partial_take_profit",
-        exitPricePerToken: result.pricePerToken,
-        solReceived: result.filledSol,
-        stagePnlSol,
-        stagePnlPct,
-        pnlSol: position.realizedPnlSolSoFar,
-        pnlPct: (position.realizedPnlSolSoFar / position.originalSolSpent) * 100,
-        isPartialExit: true,
-      };
-      logger.trade(partialRecord);
-      logger.info(
-        `PARTIAL TAKE-PROFIT ${position.symbol} (${position.mint.slice(0, 8)}...): sold ${sellPct}%, ` +
-          `holding remainder for up to +${config.maxTakeProfitPct}% (breakeven stop now active).`
-      );
-    } finally {
-      this.closing.delete(position.mint);
+    if (pnlPct >= this.effectiveTakeProfitPct(position)) {
+      void this.closePosition(position, "take_profit");
     }
   }
 
@@ -332,14 +262,8 @@ export class PositionManager {
       this.socket.unwatchMint(position.mint);
       this.sniperTracker.stopTracking(position.mint);
 
-      // Stage: this sell's own economics against the remaining cost basis.
-      // Cumulative: the whole trade's result, including any earlier partial
-      // sell(s) — this is the number that should drive dev/sniper reputation
-      // and the adaptive tuner, not just this final slice.
-      const stagePnlSol = result.filledSol - position.solSpent;
-      const stagePnlPct = position.solSpent > 0 ? (stagePnlSol / position.solSpent) * 100 : 0;
-      const totalPnlSol = position.realizedPnlSolSoFar + stagePnlSol;
-      const totalPnlPct = (totalPnlSol / position.originalSolSpent) * 100;
+      const pnlSol = result.filledSol - position.solSpent;
+      const pnlPct = (pnlSol / position.solSpent) * 100;
 
       const closed: ClosedPosition = {
         ...position,
@@ -347,16 +271,13 @@ export class PositionManager {
         exitReason: reason,
         exitPricePerToken: result.pricePerToken,
         solReceived: result.filledSol,
-        stagePnlSol,
-        stagePnlPct,
-        pnlSol: totalPnlSol,
-        pnlPct: totalPnlPct,
-        isPartialExit: false,
+        pnlSol,
+        pnlPct,
       };
       logger.trade(closed);
 
       if (position.creatorWallet) {
-        this.devReputation.recordOutcome(position.creatorWallet, totalPnlSol, totalPnlSol > 0);
+        this.devReputation.recordOutcome(position.creatorWallet, pnlSol, pnlSol > 0);
       }
       this.tuner.recordClose(closed);
     } finally {

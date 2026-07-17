@@ -2,18 +2,22 @@ import * as fs from "fs";
 import * as path from "path";
 import { config } from "./config";
 import { logger } from "./logger";
-import { ClosedPosition } from "./types";
+import { ClosedPosition, SniperRecord } from "./types";
 
 export interface TunedParams {
   minVolumeSol: number;
   maxDevHoldPct: number;
   unsupportedMaxHoldMs: number;
+  marketCapRangeUsd: { minUsd: number; maxUsd: number };
 }
 
 const STEP_FRACTION = 0.1; // nudge by 10% of baseline per evaluation
 // If one exit reason accounts for this much of a window, something
 // structural is likely wrong rather than normal trade-to-trade variance.
 const DOMINANT_EXIT_REASON_THRESHOLD = 0.5;
+// Need at least this many observed buys from a priority wallet before their
+// average buy-context is trusted enough to nudge the entry gate.
+const MIN_BUY_CONTEXT_SAMPLES = 3;
 
 /**
  * Bounded, rule-based adaptation: after every TUNING_WINDOW_TRADES closed
@@ -42,22 +46,62 @@ export class AdaptiveTuner {
   private window: ClosedPosition[] = [];
 
   constructor() {
-    this.current = this.load() ?? {
+    this.current = this.load() ?? this.baseline();
+    // Backward-compat: older tuning.json files predate marketCapRangeUsd.
+    if (!this.current.marketCapRangeUsd) {
+      this.current.marketCapRangeUsd = { minUsd: config.entryMinMarketCapUsd, maxUsd: config.entryMaxMarketCapUsd };
+    }
+  }
+
+  private baseline(): TunedParams {
+    return {
       minVolumeSol: config.minVolumeSol,
       maxDevHoldPct: config.maxDevHoldPct,
       unsupportedMaxHoldMs: config.unsupportedMaxHoldMs,
+      marketCapRangeUsd: { minUsd: config.entryMinMarketCapUsd, maxUsd: config.entryMaxMarketCapUsd },
     };
   }
 
   get(): TunedParams {
-    if (!config.adaptiveTuningEnabled) {
-      return {
-        minVolumeSol: config.minVolumeSol,
-        maxDevHoldPct: config.maxDevHoldPct,
-        unsupportedMaxHoldMs: config.unsupportedMaxHoldMs,
-      };
-    }
+    if (!config.adaptiveTuningEnabled) return this.baseline();
     return this.current;
+  }
+
+  /**
+   * Nudges the market-cap entry range's center toward what a manually-
+   * seeded priority sniper wallet actually buys at, once it has enough
+   * observed samples (MIN_BUY_CONTEXT_SAMPLES) — the "build off what we've
+   * learned about why this wallet picks what it picks" feedback loop.
+   * Range width stays roughly constant; min/max are each still clamped to
+   * TUNING_MAX_ADJUST_PCT of their own .env baseline, same as every other
+   * tuned value.
+   */
+  considerPriorityWalletCharacteristics(records: SniperRecord[]): void {
+    if (!config.adaptiveTuningEnabled) return;
+
+    for (const rec of records) {
+      if (rec.buyContextSamples < MIN_BUY_CONTEXT_SAMPLES) continue;
+
+      const { minUsd, maxUsd } = this.current.marketCapRangeUsd;
+      const currentCenter = (minUsd + maxUsd) / 2;
+      const currentWidth = maxUsd - minUsd;
+      const targetCenter = rec.avgMarketCapUsdAtBuy;
+      if (Math.abs(targetCenter - currentCenter) < 1) continue; // already centered, nothing to do
+
+      const newCenter = currentCenter + (targetCenter - currentCenter) * STEP_FRACTION;
+      const newMinUsd = this.clamp(newCenter - currentWidth / 2, config.entryMinMarketCapUsd);
+      const newMaxUsd = this.clamp(newCenter + currentWidth / 2, config.entryMaxMarketCapUsd);
+
+      if (newMinUsd === minUsd && newMaxUsd === maxUsd) continue; // already at bounds
+
+      this.current.marketCapRangeUsd = { minUsd: newMinUsd, maxUsd: newMaxUsd };
+      logger.info(
+        `[TUNER] Priority wallet ${rec.wallet.slice(0, 8)}... has bought at avg $${targetCenter.toFixed(0)} ` +
+          `mcap over ${rec.buyContextSamples} observed buys — nudging entry range toward it: ` +
+          `$${newMinUsd.toFixed(0)}-$${newMaxUsd.toFixed(0)} (was $${minUsd.toFixed(0)}-$${maxUsd.toFixed(0)}).`
+      );
+      this.save();
+    }
   }
 
   recordClose(closed: ClosedPosition): void {

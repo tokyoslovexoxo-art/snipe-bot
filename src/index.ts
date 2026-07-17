@@ -24,7 +24,13 @@ function printBanner(): void {
     ` Stop loss:       -${config.stopLossPct}%`,
     ` Max hold time:   ${config.maxHoldTimeMs / 1000}s hard cap, ${config.unsupportedMaxHoldMs / 1000}s if unsupported`,
     ` Sniper exit:     ${config.sniperExitEnabled ? "on" : "off"} (follow a trusted sniper out immediately if they fully exit)`,
-    ` Min volume:      ${config.minVolumeSol} SOL within ${config.volumeWindowMs / 1000}s of launch`,
+    ` Entry filter:    ${config.entryFilterMode}` +
+      (config.entryFilterMode !== "volume"
+        ? ` ($${config.entryMinMarketCapUsd}-$${config.entryMaxMarketCapUsd} market cap)`
+        : "") +
+      (config.entryFilterMode !== "market_cap"
+        ? ` (${config.minVolumeSol} SOL within ${config.volumeWindowMs / 1000}s of launch)`
+        : ""),
     ` Max positions:   ${config.maxConcurrentPositions}`,
     ` Max dev hold:    ${config.maxDevHoldPct}% (anti-rug filter)`,
     ` Dev tracking:    ${config.devTrackingEnabled ? "on" : "off"} (remembers devs across restarts)`,
@@ -69,6 +75,12 @@ async function main(): Promise<void> {
   const reportInterval = setInterval(() => {
     const devSummary = devReputation.summary();
     const sniperSummary = sniperReputation.summary();
+
+    const priorityRecords = config.prioritySniperWallets
+      .map((wallet) => sniperReputation.getRecord(wallet))
+      .filter((rec): rec is NonNullable<typeof rec> => rec !== undefined);
+    tuner.considerPriorityWalletCharacteristics(priorityRecords);
+
     const tuned = tuner.get();
     const balanceLine = config.dryRun
       ? `Paper balance: ${paperWallet!.solBalance.toFixed(4)} SOL | `
@@ -78,7 +90,8 @@ async function main(): Promise<void> {
         `Known devs: ${devSummary.totalDevs} (${devSummary.trusted} trusted, ${devSummary.blacklisted} blacklisted) | ` +
         `Known snipers: ${sniperSummary.totalSnipers} (${sniperSummary.trusted} trusted) | ` +
         `Tuned filters: minVolume=${tuned.minVolumeSol.toFixed(3)} SOL, maxDevHold=${tuned.maxDevHoldPct.toFixed(1)}%, ` +
-        `unsupportedMaxHold=${(tuned.unsupportedMaxHoldMs / 1000).toFixed(0)}s`
+        `unsupportedMaxHold=${(tuned.unsupportedMaxHoldMs / 1000).toFixed(0)}s, ` +
+        `mcapRange=$${tuned.marketCapRangeUsd.minUsd.toFixed(0)}-$${tuned.marketCapRangeUsd.maxUsd.toFixed(0)}`
     );
 
     const snapshot: StatusSnapshot = {

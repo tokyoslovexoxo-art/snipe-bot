@@ -17,11 +17,11 @@ export interface WindowStats {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Only counts final-exit rows (isPartialExit === false): a staged exit
- * (see positionManager.ts) logs an intermediate partial_take_profit row
- * plus a final row, and the final row's pnlSol/pnlPct already reflect the
- * whole trade's cumulative result. Counting both rows would double-count
- * partial exits.
+ * Excludes "partial_take_profit" rows for backward compatibility with logs
+ * written before the staged partial-take-profit mechanism was removed —
+ * those intermediate rows' PnL was already folded into a subsequent final
+ * row, so counting both would have double-counted. Nothing produces this
+ * exit reason going forward, so this filter is a no-op on new data.
  */
 export function loadClosedTrades(logFile: string): ClosedPosition[] {
   if (!fs.existsSync(logFile)) return [];
@@ -38,7 +38,7 @@ export function loadClosedTrades(logFile: string): ClosedPosition[] {
       // skip malformed/partial lines
     }
   }
-  return records.filter((r) => !r.isPartialExit);
+  return records.filter((r) => r.exitReason !== "partial_take_profit");
 }
 
 export function summarize(label: string, trades: ClosedPosition[]): WindowStats {

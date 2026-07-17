@@ -37,13 +37,16 @@ export interface TokenTradeEvent {
 
 export type ExitReason =
   | "take_profit"
-  | "partial_take_profit"
   | "stop_loss"
-  | "breakeven_stop"
   | "max_hold_time"
   | "sniper_exit"
   | "unsupported_timeout"
-  | "manual";
+  | "manual"
+  // No longer produced (the staged partial-take-profit mechanism was
+  // removed in favor of a single full sell), kept here only so old
+  // trades.jsonl entries with these values still type-check if re-read.
+  | "partial_take_profit"
+  | "breakeven_stop";
 
 export interface TradeResult {
   success: boolean;
@@ -59,7 +62,7 @@ export type TrustLevel = "blacklisted" | "trusted" | "neutral";
 // Which mechanism qualified this token for a buy — useful on its own as a
 // training feature later (fast-tracked buys are a different risk profile
 // than volume-confirmed ones).
-export type QualificationPath = "volume" | "dev_trusted" | "sniper_trusted";
+export type QualificationPath = "volume" | "market_cap" | "dev_trusted" | "sniper_trusted";
 
 /**
  * Snapshot of everything that informed a buy decision, captured at
@@ -91,17 +94,8 @@ export interface Position extends DecisionContext {
   name: string;
   creatorWallet: string;
   entryPricePerToken: number;
-  // Tokens/cost-basis currently held. Both shrink proportionally on a
-  // partial take-profit sell — see positionManager.ts's takePartialProfit.
   tokenAmount: number;
   solSpent: number;
-  // Immutable snapshot of the original total cost basis at buy time, used
-  // to compute the overall (cumulative) trade PnL% even after partial
-  // exits have shrunk solSpent down to the remainder's cost basis.
-  originalSolSpent: number;
-  // Cumulative SOL PnL already realized from any partial sell(s) on this
-  // position. Added to the final sell's own PnL to get the trade's total.
-  realizedPnlSolSoFar: number;
   openedAt: number;
   currentPricePerToken: number;
   currentMarketCapSol: number;
@@ -117,10 +111,6 @@ export interface Position extends DecisionContext {
   // stands on confidence alone) apart from "had it and lost it" (drop to
   // MIN_TAKE_PROFIT_PCT) — see positionManager.ts.
   sniperSupportSeen: boolean;
-  // True once PARTIAL_TAKE_PROFIT_SELL_PCT has been sold at
-  // MIN_TAKE_PROFIT_PCT under the extended-hold gate. Moves the remainder's
-  // effective stop-loss to breakeven (0%) instead of -STOP_LOSS_PCT.
-  hasTakenPartialProfit: boolean;
 }
 
 export interface DevRecord {
@@ -140,6 +130,14 @@ export interface SniperRecord {
   losses: number;
   totalPnlSol: number;
   lastSeenAt: number;
+  // Running averages describing the situations this wallet buys into —
+  // only populated for manually-seeded PRIORITY_SNIPER_WALLETS (see
+  // SniperTracker). This is the "why does this wallet pick what it picks"
+  // analysis: built entirely from observed data, not a model/prediction.
+  buyContextSamples: number;
+  avgMarketCapUsdAtBuy: number;
+  avgDevHoldPctAtBuy: number;
+  avgTimeSinceLaunchMsAtBuy: number;
 }
 
 /**
@@ -154,26 +152,19 @@ export interface StatusSnapshot {
   openPositions: Position[];
   devSummary: { totalDevs: number; trusted: number; blacklisted: number };
   sniperSummary: { totalSnipers: number; trusted: number };
-  tunedParams: { minVolumeSol: number; maxDevHoldPct: number; unsupportedMaxHoldMs: number };
+  tunedParams: {
+    minVolumeSol: number;
+    maxDevHoldPct: number;
+    unsupportedMaxHoldMs: number;
+    marketCapRangeUsd: { minUsd: number; maxUsd: number };
+  };
 }
 
 export interface ClosedPosition extends Position {
   closedAt: number;
   exitReason: ExitReason;
   exitPricePerToken: number;
-  // Proceeds from THIS sell only (partial or final stage).
   solReceived: number;
-  // THIS stage's own PnL, relative to the cost basis it sold against.
-  stagePnlSol: number;
-  stagePnlPct: number;
-  // Cumulative PnL for the trade as a whole as of this log entry — equal to
-  // stagePnlSol/stagePnlPct on a first/only exit, but on the FINAL entry of
-  // a staged exit this includes the earlier partial sell(s) too, computed
-  // against originalSolSpent (the true total investment). This is the
-  // number that should be used for "did this trade make money overall."
   pnlSol: number;
   pnlPct: number;
-  // True for a partial_take_profit log row (position stayed open after);
-  // false/absent on the row that actually closed the position out.
-  isPartialExit: boolean;
 }

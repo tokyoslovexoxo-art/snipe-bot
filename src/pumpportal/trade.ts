@@ -32,14 +32,26 @@ const TRADE_LOCAL_URL = "https://pumpportal.fun/api/trade-local";
 export class Trader {
   constructor(private paperWallet: PaperWallet | null) {}
 
-  async buy(mint: string, solAmount: number, currentPricePerToken: number): Promise<TradeResult> {
+  /**
+   * priorityFeeSolOverride: when set (live mode only), used instead of
+   * config.priorityFeeSol for this one buy — see
+   * config.priorityWalletFollowFeeSol for why/when positionManager passes
+   * this in.
+   */
+  async buy(
+    mint: string,
+    solAmount: number,
+    currentPricePerToken: number,
+    priorityFeeSolOverride?: number
+  ): Promise<TradeResult> {
     if (config.dryRun) {
       return this.paperWallet!.simulateBuy(mint, solAmount, currentPricePerToken);
     }
     return this.executeLive(
       { action: "buy", mint, amount: solAmount, denominatedInSol: "true" },
       currentPricePerToken,
-      solAmount
+      solAmount,
+      priorityFeeSolOverride
     );
   }
 
@@ -76,10 +88,17 @@ export class Trader {
     // Last quoted bonding-curve price and requested size, used only to
     // approximate fill numbers below (see note on realizedFill*).
     quotedPricePerToken: number,
-    requestedSize: number
+    requestedSize: number,
+    priorityFeeSolOverride?: number
   ): Promise<TradeResult> {
     const keypair = getKeypair();
     const connection = getConnection();
+    const priorityFeeSol = priorityFeeSolOverride ?? config.priorityFeeSol;
+    if (priorityFeeSolOverride !== undefined) {
+      logger.info(
+        `Using follow priority fee ${priorityFeeSol} SOL for this ${params.action} (copy-trading a priority sniper wallet).`
+      );
+    }
 
     try {
       const response = await fetch(TRADE_LOCAL_URL, {
@@ -92,7 +111,7 @@ export class Trader {
           amount: params.amount,
           denominatedInSol: params.denominatedInSol,
           slippage: config.slippagePct,
-          priorityFee: config.priorityFeeSol,
+          priorityFee: priorityFeeSolOverride ?? config.priorityFeeSol,
           pool: config.pool,
         }),
       });

@@ -18,6 +18,11 @@ interface TrackedToken {
   cumulativeVolumeSol: number;
   currentPricePerToken: number;
   currentMarketCapSol: number;
+  // True if this token failed the normal anti-rug checks (blacklisted dev,
+  // or dev-hold% too high). Normal qualification paths (market_cap/volume)
+  // skip these — only a manually-seeded PRIORITY_SNIPER_WALLETS buy can
+  // still override and trigger a buy anyway (see handleTrustedSniperBuy).
+  blockedByAntiRugFilter: boolean;
 }
 
 export interface QualifiedSignal extends DecisionContext {
@@ -34,18 +39,22 @@ function priceFromCurve(vSol: number, vTokens: number): number {
 }
 
 /**
- * Watches new pump.fun launches, tracks cumulative bonding-curve volume per
- * token, applies safety filters, and emits "qualified" once a token clears
- * the (adaptively tuned) minimum volume within VOLUME_WINDOW_MS. Tokens that
- * never clear the bar in time are dropped (and unwatched) to keep the
- * subscription set bounded.
+ * Watches new pump.fun launches and emits "qualified" once a token clears
+ * its entry gate (ENTRY_FILTER_MODE: market-cap range, volume threshold, or
+ * both) within VOLUME_WINDOW_MS. Tokens that never clear the bar in time are
+ * dropped (and unwatched) to keep the subscription set bounded.
  *
- * Creator wallets with a known-bad track record are skipped outright;
- * creator wallets with a known-good track record are fast-tracked (bought
- * immediately at launch instead of waiting for volume confirmation) — see
- * DevReputationStore. Separately, if a proven-profitable OTHER wallet
- * (a "sniper", not the creator) buys into a token we're still watching, that
- * also fast-tracks a buy — see SniperTracker.
+ * Creator wallets with a known-bad track record, or a too-high dev-hold%,
+ * are skipped by the NORMAL qualification paths — but every token is still
+ * tracked regardless, specifically so a manually-seeded
+ * PRIORITY_SNIPER_WALLETS buy can still override that skip (see
+ * handleTrustedSniperBuy) — you asked for the bot to copy that wallet's
+ * buys, full stop, so its judgment is allowed to override the anti-rug
+ * filter where an ordinary earned-trust sniper's can't.
+ *
+ * Creator wallets with a known-good track record are fast-tracked (bought
+ * immediately at launch instead of waiting for volume/market-cap
+ * confirmation) — see DevReputationStore.
  *
  * Every qualification path captures a full DecisionContext snapshot — this
  * is what makes the eventual trade log self-contained and reusable as
@@ -120,39 +129,43 @@ export class DiscoveryService extends EventEmitter {
     if (creatorWallet) this.devReputation.recordLaunch(creatorWallet);
 
     const trustLevel = creatorWallet ? this.devReputation.getTrustLevel(creatorWallet) : "neutral";
-    if (trustLevel === "blacklisted") {
-      logger.info(
-        `Skipping ${evt.symbol ?? evt.mint}: creator ${creatorWallet.slice(0, 8)}... has a poor track record with this bot.`
-      );
-      return;
-    }
-
     const maxDevHoldPct = this.tuner.get().maxDevHoldPct;
     const devTokens = evt.initialBuy ?? 0;
     const curveTokensAfterDevBuy = evt.vTokensInBondingCurve ?? 0;
     const devHoldPct =
       devTokens > 0 ? (devTokens / (curveTokensAfterDevBuy + devTokens)) * 100 : 0;
 
-    if (devHoldPct > maxDevHoldPct) {
-      logger.info(
-        `Skipping ${evt.symbol ?? evt.mint}: creator holds ~${devHoldPct.toFixed(1)}% of supply ` +
-          `(max allowed ${maxDevHoldPct.toFixed(1)}%) — likely rug risk.`
-      );
-      return;
-    }
+    const blacklisted = trustLevel === "blacklisted";
+    const devHoldTooHigh = devHoldPct > maxDevHoldPct;
+    const blockedByAntiRugFilter = blacklisted || devHoldTooHigh;
 
     const currentPrice = priceFromCurve(evt.vSolInBondingCurve, evt.vTokensInBondingCurve);
     const symbol = evt.symbol ?? "?";
     const name = evt.name ?? "?";
     const initialVolume = evt.solAmount ?? 0;
+    const createdAt = Date.now();
 
-    if (trustLevel === "trusted") {
+    // Always watch/track — even tokens we wouldn't normally buy ourselves —
+    // so a manually-trusted priority sniper wallet's buy can still surface
+    // and override the filter below.
+    this.socket.watchMint(evt.mint);
+    this.sniperTracker.startTracking(evt.mint, creatorWallet, devHoldPct, createdAt);
+
+    if (blockedByAntiRugFilter) {
+      const why = blacklisted
+        ? `creator ${creatorWallet.slice(0, 8)}... has a poor track record with this bot`
+        : `creator holds ~${devHoldPct.toFixed(1)}% of supply (max allowed ${maxDevHoldPct.toFixed(1)}%)`;
+      logger.info(
+        `Skipping ${symbol}: ${why} — likely rug risk. Still watching in case a manually-trusted ` +
+          `priority sniper wallet buys in anyway.`
+      );
+    }
+
+    if (trustLevel === "trusted" && !blockedByAntiRugFilter) {
       logger.info(
         `FAST-TRACK: ${symbol} (${evt.mint.slice(0, 8)}...) — creator ${creatorWallet.slice(0, 8)}... ` +
           `has a strong track record with this bot, buying immediately without waiting for volume.`
       );
-      this.socket.watchMint(evt.mint);
-      this.sniperTracker.startTracking(evt.mint, creatorWallet);
       const context = this.buildDecisionContext(
         creatorWallet,
         devHoldPct,
@@ -179,20 +192,19 @@ export class DiscoveryService extends EventEmitter {
       name,
       creatorWallet,
       devHoldPct,
-      createdAt: Date.now(),
+      createdAt,
       cumulativeVolumeSol: initialVolume,
       currentPricePerToken: currentPrice,
       currentMarketCapSol: evt.marketCapSol ?? 0,
+      blockedByAntiRugFilter,
     };
     this.tracked.set(evt.mint, entry);
-    this.socket.watchMint(evt.mint);
-    this.sniperTracker.startTracking(evt.mint, creatorWallet);
 
     logger.info(
       `New launch: ${entry.symbol} (${entry.mint.slice(0, 8)}...) initial volume ${initialVolume.toFixed(3)} SOL`
     );
 
-    this.maybeQualify(entry);
+    if (!blockedByAntiRugFilter) this.maybeQualify(entry);
   }
 
   private handleTrade(evt: TokenTradeEvent): void {
@@ -207,17 +219,27 @@ export class DiscoveryService extends EventEmitter {
       entry.currentMarketCapSol = evt.marketCapSol;
     }
 
-    this.maybeQualify(entry);
+    if (!entry.blockedByAntiRugFilter) this.maybeQualify(entry);
   }
 
   private handleTrustedSniperBuy(signal: TrustedSniperBuySignal): void {
     const entry = this.tracked.get(signal.mint);
     if (!entry) return; // already qualified/pruned, or dev-fast-tracked already
 
+    const isPriorityWallet = config.prioritySniperWallets.includes(signal.wallet);
+    if (entry.blockedByAntiRugFilter && !isPriorityWallet) {
+      // Only a manually-seeded priority wallet's judgment overrides the
+      // anti-rug filter; an ordinary earned-trust sniper's doesn't.
+      return;
+    }
+
     this.tracked.delete(signal.mint);
+    const overrideNote = entry.blockedByAntiRugFilter
+      ? " (OVERRIDING anti-rug filter — manually-trusted priority wallet)"
+      : "";
     logger.info(
       `FAST-TRACK: ${entry.symbol} (${signal.mint.slice(0, 8)}...) — trusted sniper ` +
-        `${signal.wallet.slice(0, 8)}... just bought in.`
+        `${signal.wallet.slice(0, 8)}... just bought in${overrideNote}.`
     );
     const context = this.buildDecisionContext(
       entry.creatorWallet,
@@ -238,19 +260,51 @@ export class DiscoveryService extends EventEmitter {
     } as QualifiedSignal);
   }
 
+  /**
+   * Whether a tracked token currently clears its entry gate, per
+   * ENTRY_FILTER_MODE:
+   * - "market_cap": current market cap (converted from marketCapSol via
+   *   SOL_USD_PRICE) falls within [ENTRY_MIN_MARKET_CAP_USD,
+   *   ENTRY_MAX_MARKET_CAP_USD]. No volume wait — this can qualify within
+   *   the first second if the launch's market cap is already in range.
+   * - "volume": the original behavior — cumulative bonding-curve buys have
+   *   reached the (adaptively tuned) MIN_VOLUME_SOL.
+   * - "both": both conditions at once.
+   */
+  private meetsEntryCondition(entry: TrackedToken): boolean {
+    const tuned = this.tuner.get();
+    const volumeMet = entry.cumulativeVolumeSol >= tuned.minVolumeSol;
+
+    const marketCapUsd = entry.currentMarketCapSol * config.solUsdPrice;
+    const { minUsd, maxUsd } = tuned.marketCapRangeUsd;
+    const inMarketCapRange = marketCapUsd >= minUsd && marketCapUsd <= maxUsd;
+
+    switch (config.entryFilterMode) {
+      case "market_cap":
+        return inMarketCapRange;
+      case "both":
+        return inMarketCapRange && volumeMet;
+      case "volume":
+      default:
+        return volumeMet;
+    }
+  }
+
   private maybeQualify(entry: TrackedToken): void {
-    const minVolumeSol = this.tuner.get().minVolumeSol;
-    if (entry.cumulativeVolumeSol < minVolumeSol) return;
+    if (!this.meetsEntryCondition(entry)) return;
 
     this.tracked.delete(entry.mint);
+    const marketCapUsd = entry.currentMarketCapSol * config.solUsdPrice;
+    const qualificationPath: QualificationPath = config.entryFilterMode === "volume" ? "volume" : "market_cap";
     logger.info(
-      `QUALIFIED: ${entry.symbol} (${entry.mint.slice(0, 8)}...) crossed ${minVolumeSol.toFixed(3)} SOL ` +
-        `volume (${entry.cumulativeVolumeSol.toFixed(3)} SOL) in ${Date.now() - entry.createdAt}ms`
+      `QUALIFIED: ${entry.symbol} (${entry.mint.slice(0, 8)}...) via "${config.entryFilterMode}" gate ` +
+        `(mcap=$${marketCapUsd.toFixed(0)}, volume=${entry.cumulativeVolumeSol.toFixed(3)} SOL) ` +
+        `in ${Date.now() - entry.createdAt}ms`
     );
     const context = this.buildDecisionContext(
       entry.creatorWallet,
       entry.devHoldPct,
-      "volume",
+      qualificationPath,
       entry.cumulativeVolumeSol,
       Date.now() - entry.createdAt,
       null,
@@ -269,15 +323,16 @@ export class DiscoveryService extends EventEmitter {
 
   private pruneStale(): void {
     const now = Date.now();
-    const minVolumeSol = this.tuner.get().minVolumeSol;
     for (const [mint, entry] of this.tracked) {
       if (now - entry.createdAt >= config.volumeWindowMs) {
         this.tracked.delete(mint);
         this.socket.unwatchMint(mint);
         this.sniperTracker.stopTracking(mint);
+        const marketCapUsd = entry.currentMarketCapSol * config.solUsdPrice;
         logger.info(
-          `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): only reached ` +
-            `${entry.cumulativeVolumeSol.toFixed(3)}/${minVolumeSol.toFixed(3)} SOL volume in ${config.volumeWindowMs}ms`
+          `Giving up on ${entry.symbol} (${mint.slice(0, 8)}...): never cleared the "${config.entryFilterMode}" ` +
+            `entry gate (mcap=$${marketCapUsd.toFixed(0)}, volume=${entry.cumulativeVolumeSol.toFixed(3)} SOL) ` +
+            `within ${config.volumeWindowMs}ms`
         );
       }
     }

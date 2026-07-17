@@ -78,7 +78,7 @@
         <thead>
           <tr>
             <th>Symbol</th><th>Qualification</th><th>Entry</th><th>Current</th>
-            <th>PnL%</th><th>Confidence</th><th>Target</th><th>Partial taken?</th>
+            <th>PnL%</th><th>Confidence</th><th>Target</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -164,7 +164,6 @@ function renderOpenPositions(status) {
       "<td class=\"mono " + pnlClass(pnlPct) + "\">" + fmtSigned(pnlPct, 1) + "%</td>" +
       "<td>" + (p.confidenceScore * 100).toFixed(0) + "%</td>" +
       "<td>+" + p.targetTakeProfitPct.toFixed(0) + "%</td>" +
-      "<td>" + (p.hasTakenPartialProfit ? "yes" : "no") + "</td>" +
       "</tr>";
   }).join("");
 }
@@ -195,6 +194,8 @@ function renderRepCards(status) {
     cards += card("Tuned min volume", status.tunedParams.minVolumeSol.toFixed(3) + " SOL");
     cards += card("Tuned max dev hold", status.tunedParams.maxDevHoldPct.toFixed(1) + "%");
     cards += card("Tuned unsupported hold", (status.tunedParams.unsupportedMaxHoldMs / 1000).toFixed(0) + "s");
+    cards += card("Tuned market cap range", "$" + status.tunedParams.marketCapRangeUsd.minUsd.toFixed(0) +
+      " - $" + status.tunedParams.marketCapRangeUsd.maxUsd.toFixed(0));
   } else {
     cards = '<div class="empty">Bot has not written a status snapshot yet — is it running?</div>';
   }

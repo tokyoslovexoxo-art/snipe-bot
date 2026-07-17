@@ -56,7 +56,18 @@ export class SniperReputationStore {
   private getOrCreate(wallet: string): SniperRecord {
     let rec = this.snipers.get(wallet);
     if (!rec) {
-      rec = { wallet, roundTrips: 0, wins: 0, losses: 0, totalPnlSol: 0, lastSeenAt: Date.now() };
+      rec = {
+        wallet,
+        roundTrips: 0,
+        wins: 0,
+        losses: 0,
+        totalPnlSol: 0,
+        lastSeenAt: Date.now(),
+        buyContextSamples: 0,
+        avgMarketCapUsdAtBuy: 0,
+        avgDevHoldPctAtBuy: 0,
+        avgTimeSinceLaunchMsAtBuy: 0,
+      };
       this.snipers.set(wallet, rec);
     }
     return rec;
@@ -73,6 +84,34 @@ export class SniperReputationStore {
     logger.info(
       `Sniper ${wallet.slice(0, 8)}... round-trip recorded: ${rec.wins}W/${rec.losses}L, ` +
         `total observed PnL ${rec.totalPnlSol.toFixed(4)} SOL (trusted=${this.isTrusted(wallet)})`
+    );
+  }
+
+  /**
+   * Records the situation a (typically priority-seeded) wallet just bought
+   * into, as running averages — the "why does this wallet pick what it
+   * picks" analysis. Purely descriptive of what's been observed; see
+   * AdaptiveTuner for how this can feed back into the bot's own entry gate.
+   */
+  recordBuyContext(
+    wallet: string,
+    marketCapUsd: number,
+    devHoldPct: number,
+    timeSinceLaunchMs: number
+  ): void {
+    const rec = this.getOrCreate(wallet);
+    const n = rec.buyContextSamples + 1;
+    rec.avgMarketCapUsdAtBuy += (marketCapUsd - rec.avgMarketCapUsdAtBuy) / n;
+    rec.avgDevHoldPctAtBuy += (devHoldPct - rec.avgDevHoldPctAtBuy) / n;
+    rec.avgTimeSinceLaunchMsAtBuy += (timeSinceLaunchMs - rec.avgTimeSinceLaunchMsAtBuy) / n;
+    rec.buyContextSamples = n;
+    rec.lastSeenAt = Date.now();
+    this.save();
+    logger.info(
+      `Sniper ${wallet.slice(0, 8)}... buy-context sample #${n}: mcap=$${marketCapUsd.toFixed(0)}, ` +
+        `devHold=${devHoldPct.toFixed(1)}%, ${timeSinceLaunchMs}ms after launch. Running averages: ` +
+        `mcap=$${rec.avgMarketCapUsdAtBuy.toFixed(0)}, devHold=${rec.avgDevHoldPctAtBuy.toFixed(1)}%, ` +
+        `${rec.avgTimeSinceLaunchMsAtBuy.toFixed(0)}ms.`
     );
   }
 
